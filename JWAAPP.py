@@ -567,7 +567,7 @@ if st.session_state.active_page == "dashboard":
 
                     sub_section = f"""
 <div class="sub-breakdown">
-  <div class="progress-label">Sub-creature darted DNA &nbsp;
+  <div class="progress-label">Progress to complete &nbsp;
     <span style="opacity:0.8">{sub_held:,.0f} / {sub_required:,.0f}</span>
   </div>
   <div class="progress-track-thin">
