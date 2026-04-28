@@ -50,7 +50,7 @@ RARITY_COLORS = {
     "Epic":      "#f1c40f",
     "Legendary": "#ff0000",
     "Unique":    "#51ff00",
-    "Apex":      "#241d03",
+    "Apex":      "#c8a951",
 }
 
 # ── core functions ─────────────────────────────────────────────────────────────
@@ -102,11 +102,9 @@ def dna_summary(data, name):
     p2_name  = d.get("parent_2")
     p1_amt   = d.get("parent_1_amount", 0)
     p2_amt   = d.get("parent_2_amount", 0)
-
     lvl_needed = levels_needed(rarity, level)
     target     = level + lvl_needed if lvl_needed > 0 else level
     total, need_p1, need_p2 = calc_total(rarity, level, target, p1_amt, p2_amt, curr_dna, unlocked)
-
     return {
         "name": name, "rarity": rarity, "level": level,
         "curr_dna": curr_dna, "unlocked": unlocked,
@@ -118,78 +116,46 @@ def dna_summary(data, name):
     }
 
 def fuse_amt_for_slot(data, child_name, slot):
-    """How much DNA the child consumes from this slot per fuse."""
     return (data[child_name].get("parent_1_amount", 50) if slot == "parent_1"
             else data[child_name].get("parent_2_amount", 50))
 
 def ceil_to_fuse(raw, fuse_amt):
-    """Round raw up to the nearest whole multiple of fuse_amt."""
     if raw <= 0 or fuse_amt <= 0:
         return 0.0
     return float(math.ceil(raw / fuse_amt) * fuse_amt)
 
 def compute_dart_burden(data, dino_name, parent_of, E):
-    """
-    How many darted DNA units this node still needs to supply toward the root,
-    accounting for what intermediate nodes already hold.
-
-    At each hop we:
-      1. Find the child's full rounded burden.
-      2. Subtract what the child already has (its curr_dna).
-      3. Scale that REMAINING need down to this node via fuse_amt / E.
-      4. Round up to the nearest fuse cost for this node's slot.
-    """
     child_name, slot = parent_of.get(dino_name, (None, None))
     if child_name is None:
         return 0.0
-
     amt = fuse_amt_for_slot(data, child_name, slot)
-
     grandchild_name, _ = parent_of.get(child_name, (None, None))
-
     if grandchild_name is None:
-        # Child IS the root — use root's own remaining dart need for this slot
         child_info = dna_summary(data, child_name)
-        raw = (child_info["need_p1_darted"] if slot == "parent_1"
-               else child_info["need_p2_darted"])
+        raw = (child_info["need_p1_darted"] if slot == "parent_1" else child_info["need_p2_darted"])
         return ceil_to_fuse(raw, amt)
     else:
-        # Child is an intermediate node.
-        # Step 1: what is the child's own full rounded burden toward ITS parent?
-        child_raw    = compute_dart_burden(data, child_name, parent_of, E)
-        # child_raw is already rounded up, so this is the true minimum needed.
-
-        # Step 2: how much does the child still lack?
-        child_curr   = data[child_name]["curr_dna"]
+        child_raw       = compute_dart_burden(data, child_name, parent_of, E)
+        child_curr      = data[child_name]["curr_dna"]
         child_remaining = max(0.0, child_raw - child_curr)
-
         if child_remaining == 0:
             return 0.0
-
-        # Step 3: scale remaining need to this node, then round up to fuse cost
-        raw = child_remaining * (amt / E)
-        return ceil_to_fuse(raw, amt)
+        return ceil_to_fuse(child_remaining * (amt / E), amt)
 
 def unlock_progress(data, root_name):
     if root_name not in data:
         return 0.0, "unknown", ""
-
     info = dna_summary(data, root_name)
-
     if info["level"] >= 30:
         return 100.0, "MAX", "Level 30"
     if info["unlocked"] and info["total_dna_needed"] == 0:
         return 100.0, "READY", "Fully leveled"
-
     total_needed = info["total_dna_needed"]
     curr         = info["curr_dna"]
-
     if total_needed == 0 and curr == 0:
         return 0.0, "LOCKED", "No DNA"
-
     total_required = curr + total_needed
     pct = min(100.0, (curr / total_required) * 100) if total_required > 0 else 100.0
-
     if info["unlocked"]:
         status = "UNLOCKED"
         detail = f"Lv {info['level']} to Lv 30 needs {int(total_needed)} more DNA"
@@ -199,40 +165,27 @@ def unlock_progress(data, root_name):
     else:
         status = "FUSING"
         detail = f"{int(curr)} / {int(total_required)} DNA"
-
     return pct, status, detail
 
 def tree_dna_progress(data, root_name):
-    """
-    For each sub-creature, measure curr_dna vs their remaining dart burden
-    toward the root (already rounded up to nearest fuse cost).
-    """
     tree = build_tree_list(data, root_name)
     sub  = tree[1:]
-
     if not sub:
         return None, 0, 0, []
-
-    parent_of = build_parent_of(data, tree)
-
+    parent_of      = build_parent_of(data, tree)
     total_held     = 0.0
     total_required = 0.0
     per_node       = []
-
     for name in sub:
         if name not in data:
             continue
-
         curr_dna = data[name]["curr_dna"]
         burden   = compute_dart_burden(data, name, parent_of, E)
-
         contributed = min(curr_dna, burden)
         node_pct    = min(100.0, (curr_dna / burden * 100)) if burden > 0 else 100.0
-
         total_held     += contributed
         total_required += burden
         per_node.append((name, curr_dna, round(burden, 1), round(node_pct, 1)))
-
     pct = min(100.0, (total_held / total_required * 100)) if total_required > 0 else 100.0
     return round(pct, 1), round(total_held, 1), round(total_required, 1), per_node
 
@@ -246,6 +199,60 @@ def rename_dino(data, old_name, new_name):
         if d.get("parent_1") == old_name: d["parent_1"] = new_name
         if d.get("parent_2") == old_name: d["parent_2"] = new_name
     return data
+
+# ── tree HTML renderer ────────────────────────────────────────────────────────
+def render_node_html(data, node_name, parent_of, E, is_root=False):
+    if node_name not in data:
+        return ""
+    info     = dna_summary(data, node_name)
+    color    = RARITY_COLORS.get(info["rarity"], "#888")
+    d        = data[node_name]
+    p1       = d.get("parent_1")
+    p2       = d.get("parent_2")
+    is_hybrid = bool(p1 and p2)
+    card_bg  = "#2d1f3d" if is_hybrid else "#161b24"
+    uc       = "#51ff00" if info["unlocked"] else "#666"
+    ut       = "Unlocked" if info["unlocked"] else "Locked"
+
+    if is_root:
+        if info["levels_needed"] > 0:
+            sub = f"Need {info['levels_needed']} more levels to unlock"
+        elif info["total_dna_needed"] > 0:
+            total = int(info["curr_dna"] + info["total_dna_needed"])
+            sub = f"{int(info['curr_dna']):,} / {total:,} DNA"
+        else:
+            sub = f"{info['curr_dna']:,} DNA &mdash; ready"
+    else:
+        child_name, slot = parent_of.get(node_name, (None, None))
+        if child_name and child_name in data:
+            needed = compute_dart_burden(data, node_name, parent_of, E)
+            if needed == 0:
+                sub = f"<span style='color:#51ff00'>Satisfied</span> &middot; have {info['curr_dna']:,}"
+            else:
+                have     = info["curr_dna"]
+                have_col = "#51ff00" if have >= needed else "#f1c40f" if have >= needed * 0.5 else "#ff6b6b"
+                sub = (f"Need <strong>{int(needed):,}</strong> darts"
+                       f"<br><span style='color:{have_col}'>Have {have:,}</span>")
+        else:
+            sub = f"{info['curr_dna']:,} DNA"
+
+    card = f"""<div class="jwa-tnode" style="background:{card_bg};border-top-color:{color}">
+  <div class="jwa-tnode-name" style="color:{color}">{node_name}</div>
+  <div class="jwa-tnode-rarity" style="color:{color}">{info['rarity']}</div>
+  <div class="jwa-tnode-stats">Lv {info['level']} &nbsp;&middot;&nbsp; {info['curr_dna']:,} DNA</div>
+  <div class="jwa-tnode-sub">{sub}</div>
+  <div style="font-size:0.62rem;color:{uc};margin-top:0.25rem;letter-spacing:0.5px">{ut}</div>
+</div>"""
+
+    children_html = ""
+    if p1 and p1 in data:
+        children_html += f"<li>{render_node_html(data, p1, parent_of, E)}</li>"
+    if p2 and p2 in data:
+        children_html += f"<li>{render_node_html(data, p2, parent_of, E)}</li>"
+
+    if children_html:
+        return f"{card}<ul>{children_html}</ul>"
+    return card
 
 # ── page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="JWA Tracker", page_icon="", layout="wide")
@@ -261,6 +268,121 @@ html, body, [class*="css"] {
 }
 h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
 
+/* ── visual tree ── */
+.jwa-tree-wrap {
+    overflow-x: auto;
+    padding: 1rem 2rem 3rem;
+}
+.jwa-tree,
+.jwa-tree ul,
+.jwa-tree li {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.jwa-tree > ul { padding-top: 0; }
+.jwa-tree ul {
+    display: flex;
+    justify-content: center;
+    padding-top: 28px;
+    position: relative;
+}
+/* vertical line from ul up to parent */
+.jwa-tree ul::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 28px;
+    background: #3a4555;
+}
+/* suppress line above root */
+.jwa-tree > ul::before { display: none; }
+.jwa-tree li {
+    position: relative;
+    padding: 0 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+/* horizontal bar across siblings */
+.jwa-tree li::before,
+.jwa-tree li::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    width: 50%;
+    height: 28px;
+    border-top: 2px solid #3a4555;
+}
+.jwa-tree li::before { right: 50%; }
+.jwa-tree li::after  { left: 50%; border-left: 2px solid #3a4555; }
+/* only child — no horizontal bar */
+.jwa-tree li:only-child::before,
+.jwa-tree li:only-child::after { display: none; }
+/* cap left end and right end */
+.jwa-tree li:first-child::before { border: none; }
+.jwa-tree li:last-child::after   { border-top: 2px solid #3a4555; border-left: none; }
+.jwa-tree li:last-child::before  {
+    border-right: 2px solid #3a4555;
+    border-radius: 0 6px 0 0;
+}
+.jwa-tree li:first-child::after  { border-radius: 6px 0 0 0; }
+/* vertical line from horizontal bar down to node */
+.jwa-tree li > .jwa-tnode {
+    position: relative;
+    margin-top: 28px;
+}
+.jwa-tree li > .jwa-tnode::before {
+    content: '';
+    position: absolute;
+    top: -28px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 28px;
+    background: #3a4555;
+}
+.jwa-tree li:only-child > .jwa-tnode::before { display: none; }
+
+/* node card */
+.jwa-tnode {
+    border: 1px solid #2a2f3a;
+    border-top: 3px solid;
+    border-radius: 8px;
+    padding: 0.65rem 0.9rem 0.6rem;
+    min-width: 148px;
+    max-width: 190px;
+    text-align: center;
+    background: #161b24;
+}
+.jwa-tnode-name {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 1.05rem;
+    letter-spacing: 1.2px;
+    line-height: 1.1;
+}
+.jwa-tnode-rarity {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 1.4px;
+    opacity: 0.65;
+    margin-top: 0.05rem;
+}
+.jwa-tnode-stats {
+    font-size: 0.72rem;
+    opacity: 0.55;
+    margin-top: 0.3rem;
+}
+.jwa-tnode-sub {
+    font-size: 0.72rem;
+    margin-top: 0.25rem;
+    line-height: 1.4;
+}
+
+/* ── dashboard cards ── */
 .dash-card {
     background: #161b24;
     border: 1px solid #2a2f3a;
@@ -276,120 +398,43 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
 }
 .dash-card-name {
     font-family: 'Bebas Neue', sans-serif;
-    font-size: 1.3rem;
-    letter-spacing: 1.5px;
-    padding-left: 8px;
+    font-size: 1.3rem; letter-spacing: 1.5px; padding-left: 8px;
 }
 .dash-card-meta {
-    font-size: 0.78rem;
-    opacity: 0.6;
-    padding-left: 8px;
-    margin-top: 0.1rem;
-    margin-bottom: 0.4rem;
+    font-size: 0.78rem; opacity: 0.6; padding-left: 8px;
+    margin-top: 0.1rem; margin-bottom: 0.4rem;
 }
 .progress-track {
-    background: #0d0f14;
-    border-radius: 99px;
-    height: 8px;
-    margin: 0.4rem 0 0.25rem;
-    overflow: hidden;
+    background: #0d0f14; border-radius: 99px;
+    height: 8px; margin: 0.4rem 0 0.25rem; overflow: hidden;
 }
 .progress-track-thin {
-    background: #0d0f14;
-    border-radius: 99px;
-    height: 5px;
-    margin: 0.25rem 0 0.2rem;
-    overflow: hidden;
+    background: #0d0f14; border-radius: 99px;
+    height: 5px; margin: 0.25rem 0 0.2rem; overflow: hidden;
 }
-.progress-fill {
-    height: 100%;
-    border-radius: 99px;
-    transition: width 0.3s ease;
-}
+.progress-fill { height: 100%; border-radius: 99px; transition: width 0.3s ease; }
 .progress-label {
-    font-size: 0.7rem;
-    opacity: 0.5;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    margin-top: 0.6rem;
-    margin-bottom: 0;
+    font-size: 0.7rem; opacity: 0.5; letter-spacing: 0.5px;
+    text-transform: uppercase; margin-top: 0.6rem; margin-bottom: 0;
 }
-.dash-pct {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 1.6rem;
-    letter-spacing: 1px;
-}
-.dash-sub-pct {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 1rem;
-    letter-spacing: 1px;
-    opacity: 0.85;
-}
+.dash-pct { font-family: 'Bebas Neue', sans-serif; font-size: 1.6rem; letter-spacing: 1px; }
+.dash-sub-pct { font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 1px; opacity: 0.85; }
 .dash-status {
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    border-radius: 4px;
-    padding: 0.1rem 0.4rem;
-    display: inline-block;
-    margin-left: 0.4rem;
-    vertical-align: middle;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 1.5px;
+    text-transform: uppercase; border-radius: 4px; padding: 0.1rem 0.4rem;
+    display: inline-block; margin-left: 0.4rem; vertical-align: middle;
 }
 .dash-detail { font-size: 0.78rem; opacity: 0.55; margin-top: 0.1rem; padding-left: 1px; }
-
-.sub-breakdown {
-    margin-top: 0.6rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid #2a2f3a;
-}
-details.sub-details summary {
-    cursor: pointer;
-    list-style: none;
-    outline: none;
-    user-select: none;
-}
+.sub-breakdown { margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid #2a2f3a; }
+details.sub-details summary { cursor: pointer; list-style: none; outline: none; user-select: none; }
 details.sub-details summary::-webkit-details-marker { display: none; }
-details.sub-details summary::after {
-    content: " [show]";
-    font-size: 0.7rem;
-    opacity: 0.4;
-    font-family: 'DM Sans', sans-serif;
-}
+details.sub-details summary::after { content: " [show]"; font-size: 0.7rem; opacity: 0.4; }
 details.sub-details[open] summary::after { content: " [hide]"; }
-
-.sub-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 0.74rem;
-    opacity: 0.75;
-    margin-top: 0.25rem;
-}
+.sub-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.74rem; opacity: 0.75; margin-top: 0.25rem; }
 .sub-row-name { flex: 1; }
 .sub-row-nums { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-.dino-card {
-    background: #161b24;
-    border: 1px solid #2a2f3a;
-    border-radius: 10px;
-    padding: 1rem 1.2rem;
-    margin-bottom: 0.8rem;
-    position: relative;
-}
-.dino-card .rarity-bar {
-    position: absolute; left: 0; top: 0; bottom: 0;
-    width: 4px; border-radius: 10px 0 0 10px;
-}
-.rarity-label {
-    font-size: 0.7rem; font-weight: 600;
-    letter-spacing: 1.5px; text-transform: uppercase; opacity: 0.7;
-}
-.dna-badge {
-    background: #1e2530; border-radius: 6px;
-    padding: 0.3rem 0.6rem; font-size: 0.85rem;
-    display: inline-block; margin-top: 0.3rem;
-}
+/* ── fuse ── */
 .fuse-panel {
     background: #0f1a14; border: 1px solid #1e8a5e;
     border-radius: 12px; padding: 1.4rem 1.6rem; margin-bottom: 1.2rem;
@@ -528,94 +573,64 @@ if st.session_state.active_page == "dashboard":
     for row_start in range(0, len(cards), cols_per_row):
         row_cards = cards[row_start : row_start + cols_per_row]
         cols = st.columns(cols_per_row)
-
         for col, (name, pct, status, detail) in zip(cols, row_cards):
             with col:
                 info  = dna_summary(data, name)
                 color = RARITY_COLORS.get(info["rarity"], "#888")
-
-                if status == "MAX":
-                    badge_bg, badge_fg = "#1a3a1a", "#51ff00"
-                elif status == "UNLOCKED":
-                    badge_bg, badge_fg = "#1a2a3a", "#4a90e2"
-                elif status == "FUSING":
-                    badge_bg, badge_fg = "#2a2a0a", "#f1c40f"
-                else:
-                    badge_bg, badge_fg = "#2a1a1a", "#ff6b6b"
-
-                if pct >= 75:   bar_color = "#51ff00"
-                elif pct >= 40: bar_color = "#f1c40f"
-                else:           bar_color = "#e05555"
-
+                if status == "MAX":      badge_bg, badge_fg = "#1a3a1a", "#51ff00"
+                elif status == "UNLOCKED": badge_bg, badge_fg = "#1a2a3a", "#4a90e2"
+                elif status == "FUSING":   badge_bg, badge_fg = "#2a2a0a", "#f1c40f"
+                else:                      badge_bg, badge_fg = "#2a1a1a", "#ff6b6b"
+                bar_color = "#51ff00" if pct >= 75 else "#f1c40f" if pct >= 40 else "#e05555"
                 tree      = build_tree_list(data, name)
                 n_parents = len(tree) - 1
-
                 sub_pct, sub_held, sub_required, sub_nodes = tree_dna_progress(data, name)
-
                 sub_section = ""
                 if sub_pct is not None:
-                    if sub_pct >= 75:   sub_bar_color = "#51ff00"
-                    elif sub_pct >= 40: sub_bar_color = "#f1c40f"
-                    else:               sub_bar_color = "#e05555"
-
+                    sub_bar_color = "#51ff00" if sub_pct >= 75 else "#f1c40f" if sub_pct >= 40 else "#e05555"
                     rows_html = ""
                     for node_name, node_curr, node_burden, node_pct in sub_nodes:
-                        node_color = RARITY_COLORS.get(
-                            data[node_name]["rarity"] if node_name in data else "Common", "#888"
-                        )
+                        node_color = RARITY_COLORS.get(data[node_name]["rarity"] if node_name in data else "Common", "#888")
                         if node_burden == 0:
-                            val_str = f"<span style='opacity:0.4'>not needed</span>"
+                            val_str = "<span style='opacity:0.4'>not needed</span>"
                         elif node_pct >= 100:
                             val_str = f"{int(node_curr):,} / {int(node_burden):,} &nbsp;<span style='color:{sub_bar_color}'>done</span>"
                         else:
-                            still_needed = max(0, node_burden - node_curr)
-                            val_str = f"{int(node_curr):,} / {int(node_burden):,} &nbsp;<span style='opacity:0.5'>need {int(still_needed):,}</span>"
-
-                        rows_html += f"""
-<div class="sub-row">
+                            still = max(0, node_burden - node_curr)
+                            val_str = f"{int(node_curr):,} / {int(node_burden):,} &nbsp;<span style='opacity:0.5'>need {int(still):,}</span>"
+                        rows_html += f"""<div class="sub-row">
   <span class="sub-row-name" style="color:{node_color}">{node_name}</span>
   <span class="sub-row-nums">{val_str} &nbsp;
     <span style="color:{sub_bar_color};min-width:40px;display:inline-block;text-align:right">{node_pct:.0f}%</span>
   </span>
 </div>"""
-
-                    sub_section = f"""
-<div class="sub-breakdown">
-  <div class="progress-label">Sub-creature darted DNA &nbsp;
-    <span style="opacity:0.8">{sub_held:,.0f} / {sub_required:,.0f}</span>
-  </div>
+                    sub_section = f"""<div class="sub-breakdown">
+  <div class="progress-label">Sub-creature darted DNA &nbsp;<span style="opacity:0.8">{sub_held:,.0f} / {sub_required:,.0f}</span></div>
   <div class="progress-track-thin">
     <div class="progress-fill" style="width:{sub_pct:.1f}%;background:{sub_bar_color}"></div>
   </div>
   <details class="sub-details">
-    <summary>
-      <span class="dash-sub-pct" style="color:{sub_bar_color}">{sub_pct:.1f}%</span>
-    </summary>
+    <summary><span class="dash-sub-pct" style="color:{sub_bar_color}">{sub_pct:.1f}%</span></summary>
     {rows_html}
   </details>
 </div>"""
 
-                st.markdown(f"""
-<div class="dash-card">
+                st.markdown(f"""<div class="dash-card">
   <div class="rarity-bar" style="background:{color}"></div>
   <div style="padding-left:8px">
     <div class="dash-card-name">{name}</div>
     <div class="dash-card-meta">
-      <span style="color:{color}">{info['rarity']}</span>
-      &nbsp;·&nbsp; Lv {info['level']}
+      <span style="color:{color}">{info['rarity']}</span> &nbsp;·&nbsp; Lv {info['level']}
       {'&nbsp;·&nbsp; ' + str(n_parents) + ' ancestors' if n_parents > 0 else ''}
     </div>
     <div class="progress-label">Root DNA</div>
-    <div class="progress-track">
-      <div class="progress-fill" style="width:{pct:.1f}%;background:{bar_color}"></div>
-    </div>
+    <div class="progress-track"><div class="progress-fill" style="width:{pct:.1f}%;background:{bar_color}"></div></div>
     <span class="dash-pct" style="color:{bar_color}">{pct:.1f}%</span>
     <span class="dash-status" style="background:{badge_bg};color:{badge_fg}">{status}</span>
     <div class="dash-detail">{detail}</div>
     {sub_section}
   </div>
-</div>
-""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
                 if st.button(f"View {name}", key=f"dash_btn_{name}", use_container_width=True):
                     st.session_state.active_page = "tree"
@@ -636,57 +651,22 @@ elif st.session_state.active_page == "tree":
         selected = st.selectbox("View tree for", top_level, index=default_idx, key="tree_select")
     st.session_state.tree_animal = None
 
-    tree = build_tree_list(data, selected)
+    tree      = build_tree_list(data, selected)
     parent_of = build_parent_of(data, tree)
 
     st.markdown(f"## {selected} — Evolution Tree")
 
-    for i, dino_name in enumerate(tree):
-        if dino_name not in data: continue
-        info  = dna_summary(data, dino_name)
-        color = RARITY_COLORS.get(info["rarity"], "#888")
-        indent        = "&nbsp;" * (i * 4) if i > 0 else ""
-        connector     = "&#x2517;&#x2501; " if i > 0 else ""
-        unlocked_text = "[Unlocked]" if info["unlocked"] else "[Locked]"
-
-        if i == 0:
-            lvl_text = (f"Needs <strong>{info['levels_needed']}</strong> more levels to unlock"
-                        if info["levels_needed"] > 0 else "Ready to fuse / already unlocked")
-            badge_line = f"DNA needed to level up: <strong>{info['total_dna_needed']}</strong> &nbsp;&rarr;&nbsp; {lvl_text}"
-        else:
-            child_name, slot = parent_of.get(dino_name, (None, None))
-            if child_name and child_name in data:
-                needed = compute_dart_burden(data, dino_name, parent_of, E)
-                badge_line = (f"DNA needed for <strong>{child_name}</strong>: "
-                              f"<strong>{needed}</strong> darted DNA &nbsp;|&nbsp; Have: {info['curr_dna']}")
-            else:
-                badge_line = f"Current DNA: {info['curr_dna']}"
-
-        p_info = ""
-        if info["p1_name"]:
-            p1b = compute_dart_burden(data, info["p1_name"], parent_of, E)
-            p_info += f"&nbsp;&nbsp;<strong>{info['p1_name']}</strong> darts needed: <code>{p1b}</code>"
-        if info["p2_name"]:
-            p2b = compute_dart_burden(data, info["p2_name"], parent_of, E)
-            p_info += f"&nbsp;&nbsp;<strong>{info['p2_name']}</strong> darts needed: <code>{p2b}</code>"
-
-        card_bg = "#2d1f3d" if (info["p1_name"] and info["p2_name"]) else "#161b24"
-        st.markdown(f"""
-<div class="dino-card" style="background:{card_bg}">
-  <div class="rarity-bar" style="background:{color}"></div>
-  <div style="padding-left:8px">
-    <span style="font-size:1.1rem;font-weight:600">{indent}{connector}{dino_name}</span>
-    &nbsp;<span class="rarity-label" style="color:{color}">{info['rarity']}</span>
-    &nbsp;<span style="font-size:0.75rem;opacity:0.6">{unlocked_text}</span>
-    <br/>
-    <span style="opacity:0.6;font-size:0.85rem">Level {info['level']} &nbsp;|&nbsp; DNA: {info['curr_dna']}</span>
-    <br/>
-    <div class="dna-badge">{badge_line}</div>
-    <div style="margin-top:0.3rem;font-size:0.85rem">{p_info}</div>
+    # ── visual tree ───────────────────────────────────────────────────────────
+    node_html = render_node_html(data, selected, parent_of, E, is_root=True)
+    st.markdown(f"""
+<div class="jwa-tree-wrap">
+  <div class="jwa-tree">
+    <ul><li>{node_html}</li></ul>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
+    # ── raw data editor ───────────────────────────────────────────────────────
     with st.expander("Edit raw data"):
         st.caption("Editing the Name column will rename the dinosaur and update all parent references automatically.")
         edit_rows = []
@@ -817,11 +797,9 @@ elif st.session_state.active_page == "fuse":
 
         with st.form("fuse_form"):
             actual_dna = st.number_input(
-                "Actual DNA received",
-                min_value=0, value=int(expected), step=10,
+                "Actual DNA received", min_value=0, value=int(expected), step=10,
                 help=f"Total DNA from all {count} fuse(s). Each fuse is a multiple of 10."
             )
-
             diff = actual_dna - expected
             if count > 1:
                 per_avg = round(actual_dna / count, 1)
@@ -832,12 +810,9 @@ elif st.session_state.active_page == "fuse":
                 else:
                     st.markdown(f'<span class="fuse-result-avg">Exactly average ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
             else:
-                if actual_dna >= 30:
-                    st.markdown('<span class="fuse-result-good">Great fuse!</span>', unsafe_allow_html=True)
-                elif actual_dna == 10:
-                    st.markdown('<span class="fuse-result-bad">Min roll.</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="fuse-result-avg">Average fuse.</span>', unsafe_allow_html=True)
+                if actual_dna >= 30:   st.markdown('<span class="fuse-result-good">Great fuse!</span>', unsafe_allow_html=True)
+                elif actual_dna == 10: st.markdown('<span class="fuse-result-bad">Min roll.</span>', unsafe_allow_html=True)
+                else:                  st.markdown('<span class="fuse-result-avg">Average fuse.</span>', unsafe_allow_html=True)
 
             st.markdown(f"<span style='opacity:0.6;font-size:0.82rem'>"
                         f"Deducts <strong>{total_p1} {p1_name}</strong> and "
@@ -849,7 +824,6 @@ elif st.session_state.active_page == "fuse":
                 if p1_name in data: data[p1_name]["curr_dna"] = max(0, data[p1_name]["curr_dna"] - total_p1)
                 if p2_name in data: data[p2_name]["curr_dna"] = max(0, data[p2_name]["curr_dna"] - total_p2)
                 data[fuse_dino_name]["curr_dna"] = data[fuse_dino_name].get("curr_dna", 0) + actual_dna
-
                 dna_table  = rarity_map[fuse_dino["rarity"]]
                 curr_level = data[fuse_dino_name]["level"]
                 curr_dna   = data[fuse_dino_name]["curr_dna"]
@@ -857,12 +831,9 @@ elif st.session_state.active_page == "fuse":
                 while curr_level < 30:
                     cost = dna_table.get(curr_level + 1)
                     if cost is None or curr_dna < cost: break
-                    curr_dna  -= cost
-                    curr_level += 1
-                    leveled_up += 1
+                    curr_dna  -= cost; curr_level += 1; leveled_up += 1
                 data[fuse_dino_name]["level"]    = curr_level
                 data[fuse_dino_name]["curr_dna"] = curr_dna
-
                 save_data(data)
                 st.session_state.data = data
                 st.session_state.fuse_result = {
@@ -882,17 +853,14 @@ elif st.session_state.active_page == "fuse":
             diff_str     = f"+{diff:.0f}" if diff >= 0 else f"{diff:.0f}"
             level_line   = (f"<br/><strong>Leveled up {r['leveled_up']}x to Lv {r['new_level']}</strong> "
                             f"(remaining DNA: {r['new_dna']})" if r["leveled_up"] > 0 else "")
-            st.markdown(f"""
-<div style="background:{banner_color};border-radius:10px;padding:1rem 1.4rem;
-            margin-top:1rem;border:1px solid #2a3a2a">
+            st.markdown(f"""<div style="background:{banner_color};border-radius:10px;padding:1rem 1.4rem;
+                        margin-top:1rem;border:1px solid #2a3a2a">
   <strong>Fuse applied.</strong><br/>
   <strong>{r['dino']}</strong> +{r['actual']} DNA
   <span style="opacity:0.7">({diff_str} vs expected {r['expected']:.0f})</span><br/>
   <strong>{r['p1_name']}</strong> -{r['p1_cost']} &nbsp;|&nbsp;
-  <strong>{r['p2_name']}</strong> -{r['p2_cost']}
-  {level_line}
-</div>
-""", unsafe_allow_html=True)
+  <strong>{r['p2_name']}</strong> -{r['p2_cost']}{level_line}
+</div>""", unsafe_allow_html=True)
             if st.button("Dismiss"):
                 st.session_state.fuse_result = None
                 st.rerun()
