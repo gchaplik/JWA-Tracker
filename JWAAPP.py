@@ -22,11 +22,11 @@ E = sum(dna_prob[k]*k for k in dna_prob)
 
 FUSE_PACKS = {
     "1x":   {"count": 1,   "label": "Single Fuse"},
-    "5x":   {"count": 5,   "label": "5× Fuse"},
-    "20x":  {"count": 20,  "label": "20× Fuse"},
-    "50x":  {"count": 50,  "label": "50× Fuse"},
-    "100x": {"count": 100, "label": "100× Fuse"},
-    "200x": {"count": 200, "label": "200× Fuse"},
+    "5x":   {"count": 5,   "label": "5x Fuse"},
+    "20x":  {"count": 20,  "label": "20x Fuse"},
+    "50x":  {"count": 50,  "label": "50x Fuse"},
+    "100x": {"count": 100, "label": "100x Fuse"},
+    "200x": {"count": 200, "label": "200x Fuse"},
 }
 
 Common_dna_needed    = {1:50,2:100,3:150,4:200,5:250,6:300,7:350,8:400,9:500,10:750,11:1000,12:1250,13:1500,14:2000,15:2500,16:3000,17:3500,18:4000,19:5000,20:7500,21:10000,22:12500,23:15000,24:20000,25:25000,26:30000,27:35000,28:40000,29:50000,30:75000}
@@ -125,39 +125,29 @@ def compute_dart_burden(data, dino_name, parent_of, E):
         return round(child_true_burden * (fuse_amt / E), 2)
 
 def unlock_progress(data, root_name):
-    """
-    Returns (pct, status_label, detail) for the dashboard.
-    pct: 0-100 float.
-    Considers the whole tree: root DNA + parent DNA availability.
-    """
     if root_name not in data:
         return 0.0, "unknown", ""
 
     info = dna_summary(data, root_name)
 
-    # Already max level
     if info["level"] >= 30:
         return 100.0, "MAX", "Level 30"
 
-    # Already unlocked and no more DNA needed
     if info["unlocked"] and info["total_dna_needed"] == 0:
         return 100.0, "READY", "Fully leveled"
 
-    total_needed = info["total_dna_needed"]
-    curr         = info["curr_dna"]
+    total_needed  = info["total_dna_needed"]
+    curr          = info["curr_dna"]
 
     if total_needed == 0 and curr == 0:
         return 0.0, "LOCKED", "No DNA"
 
-    total_required = curr + total_needed  # full amount needed from scratch
-    if total_required == 0:
-        pct = 100.0
-    else:
-        pct = min(100.0, (curr / total_required) * 100)
+    total_required = curr + total_needed
+    pct = min(100.0, (curr / total_required) * 100) if total_required > 0 else 100.0
 
     if info["unlocked"]:
         status = "UNLOCKED"
-        detail = f"Lv {info['level']} → Lv 30 needs {int(total_needed)} more DNA"
+        detail = f"Lv {info['level']} to Lv 30 needs {int(total_needed)} more DNA"
     elif info["levels_needed"] > 0:
         status = "LOCKED"
         detail = f"Needs {info['levels_needed']} more levels to unlock"
@@ -168,23 +158,18 @@ def unlock_progress(data, root_name):
     return pct, status, detail
 
 def rename_dino(data, old_name, new_name):
-    """Rename a dino and update all parent references throughout the dataset."""
     if old_name == new_name or old_name not in data or not new_name:
         return data
-    # Copy entry under new name
     data[new_name] = dict(data[old_name])
     data[new_name]["name"] = new_name
     del data[old_name]
-    # Update all parent references
     for d in data.values():
-        if d.get("parent_1") == old_name:
-            d["parent_1"] = new_name
-        if d.get("parent_2") == old_name:
-            d["parent_2"] = new_name
+        if d.get("parent_1") == old_name: d["parent_1"] = new_name
+        if d.get("parent_2") == old_name: d["parent_2"] = new_name
     return data
 
 # ── page config ───────────────────────────────────────────────────────────────
-st.set_page_config(page_title="JWA Tracker", page_icon="🦕", layout="wide")
+st.set_page_config(page_title="JWA Tracker", page_icon="", layout="wide")
 
 st.markdown("""
 <style>
@@ -197,30 +182,6 @@ html, body, [class*="css"] {
 }
 h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
 
-/* ── nav bar ── */
-.nav-bar {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 1.5rem;
-    border-bottom: 1px solid #2a2f3a;
-    padding-bottom: 0.75rem;
-}
-.nav-btn {
-    background: transparent;
-    border: 1px solid #2a2f3a;
-    border-radius: 8px;
-    color: #aaa;
-    padding: 0.4rem 1.2rem;
-    font-family: 'DM Sans', sans-serif;
-    font-weight: 600;
-    cursor: pointer;
-    font-size: 0.9rem;
-    transition: all 0.15s;
-}
-.nav-btn:hover  { background: #1e2530; color: #e8e4dc; }
-.nav-btn.active { background: #1e8a5e; border-color: #1e8a5e; color: white; }
-
-/* ── dashboard cards ── */
 .dash-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -233,11 +194,8 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
     border-radius: 12px;
     padding: 1.1rem 1.3rem 1rem;
     position: relative;
-    cursor: pointer;
-    transition: border-color 0.15s, transform 0.1s;
     overflow: hidden;
 }
-.dash-card:hover { border-color: #1e8a5e; transform: translateY(-2px); }
 .dash-card .rarity-bar {
     position: absolute; left: 0; top: 0; bottom: 0;
     width: 4px; border-radius: 12px 0 0 12px;
@@ -284,7 +242,6 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
 }
 .dash-detail { font-size: 0.78rem; opacity: 0.55; margin-top: 0.2rem; padding-left: 1px; }
 
-/* ── tree cards ── */
 .dino-card {
     background: #161b24;
     border: 1px solid #2a2f3a;
@@ -306,8 +263,6 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
     padding: 0.3rem 0.6rem; font-size: 0.85rem;
     display: inline-block; margin-top: 0.3rem;
 }
-
-/* ── fuse ── */
 .fuse-panel {
     background: #0f1a14; border: 1px solid #1e8a5e;
     border-radius: 12px; padding: 1.4rem 1.6rem; margin-bottom: 1.2rem;
@@ -320,8 +275,6 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
     border-radius: 20px; padding: 0.2rem 0.75rem;
     font-size: 0.82rem; margin: 0.2rem 0.2rem 0 0;
 }
-
-/* ── buttons ── */
 .stButton>button {
     background: #1e8a5e; color: white; border: none;
     border-radius: 6px; font-family: 'DM Sans', sans-serif; font-weight: 600;
@@ -331,17 +284,17 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
 """, unsafe_allow_html=True)
 
 # ── session state ──────────────────────────────────────────────────────────────
-if "data"         not in st.session_state: st.session_state.data         = load_data()
-if "form_key"     not in st.session_state: st.session_state.form_key     = 0
-if "fuse_result"  not in st.session_state: st.session_state.fuse_result  = None
-if "active_page"  not in st.session_state: st.session_state.active_page  = "dashboard"
-if "tree_animal"  not in st.session_state: st.session_state.tree_animal  = None
+if "data"        not in st.session_state: st.session_state.data        = load_data()
+if "form_key"    not in st.session_state: st.session_state.form_key    = 0
+if "fuse_result" not in st.session_state: st.session_state.fuse_result = None
+if "active_page" not in st.session_state: st.session_state.active_page = "dashboard"
+if "tree_animal" not in st.session_state: st.session_state.tree_animal = None
 
 data = st.session_state.data
 
 # ── sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("# 🦕 JWA Tracker")
+    st.markdown("# JWA Tracker")
     st.markdown("---")
     st.markdown("### Add / Update Dinosaur")
     all_names = list(data.keys())
@@ -358,8 +311,8 @@ with st.sidebar:
         p2_name = st.selectbox("Parent 2", [""] + all_names)
         p2_amt  = st.number_input("Parent 2 fuse amount", min_value=0, value=50)
         col1, col2 = st.columns(2)
-        with col1: submitted = st.form_submit_button("💾 Save")
-        with col2: cleared   = st.form_submit_button("🗑️ Clear")
+        with col1: submitted = st.form_submit_button("Save")
+        with col2: cleared   = st.form_submit_button("Clear")
 
         if submitted and name:
             data[name] = {
@@ -382,7 +335,7 @@ with st.sidebar:
         with st.form("update_dna"):
             target_dino = st.selectbox("Dinosaur", all_names)
             new_dna     = st.number_input("New DNA amount", min_value=0, value=0)
-            if st.form_submit_button("✏️ Update DNA"):
+            if st.form_submit_button("Update DNA"):
                 data[target_dino]["curr_dna"] = new_dna
                 save_data(data)
                 st.session_state.data = data
@@ -393,7 +346,7 @@ with st.sidebar:
     if all_names:
         with st.form("delete_dino"):
             del_name = st.selectbox("Select to delete", all_names)
-            if st.form_submit_button("🗑️ Delete"):
+            if st.form_submit_button("Delete"):
                 del data[del_name]
                 save_data(data)
                 st.session_state.data = data
@@ -402,20 +355,19 @@ with st.sidebar:
 # ── main ───────────────────────────────────────────────────────────────────────
 st.markdown("# Jurassic World Alive — DNA Tracker")
 
-# ── top navigation ─────────────────────────────────────────────────────────────
 nav_cols = st.columns([1, 1, 1, 5])
 with nav_cols[0]:
-    if st.button("🗂️ Dashboard", use_container_width=True,
+    if st.button("Dashboard", use_container_width=True,
                  type="primary" if st.session_state.active_page == "dashboard" else "secondary"):
         st.session_state.active_page = "dashboard"
         st.rerun()
 with nav_cols[1]:
-    if st.button("🌳 Tree", use_container_width=True,
+    if st.button("Tree", use_container_width=True,
                  type="primary" if st.session_state.active_page == "tree" else "secondary"):
         st.session_state.active_page = "tree"
         st.rerun()
 with nav_cols[2]:
-    if st.button("⚗️ Fuse", use_container_width=True,
+    if st.button("Fuse", use_container_width=True,
                  type="primary" if st.session_state.active_page == "fuse" else "secondary"):
         st.session_state.active_page = "fuse"
         st.rerun()
@@ -426,7 +378,6 @@ if not data:
     st.info("No dinosaurs yet. Add one in the sidebar to get started.")
     st.stop()
 
-# Compute top-level (root) animals
 top_level = [n for n, d in data.items()
              if not any(d2.get("parent_1") == n or d2.get("parent_2") == n
                         for d2 in data.values())]
@@ -437,50 +388,42 @@ if not top_level:
 # PAGE: DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.active_page == "dashboard":
-    st.markdown("## 🗂️ Creature Dashboard")
+    st.markdown("## Dashboard")
     st.markdown("Click any card to open its evolution tree.")
 
-    if not top_level:
-        st.info("No root creatures found.")
-    else:
-        # Sort: incomplete first (by pct asc), then complete
-        cards = []
-        for name in top_level:
-            pct, status, detail = unlock_progress(data, name)
-            cards.append((name, pct, status, detail))
-        cards.sort(key=lambda x: (x[2] == "MAX", x[1]))
+    cards = []
+    for name in top_level:
+        pct, status, detail = unlock_progress(data, name)
+        cards.append((name, pct, status, detail))
+    cards.sort(key=lambda x: (x[2] == "MAX", x[1]))
 
-        # Render in a responsive grid using columns (3 per row)
-        cols_per_row = 3
-        for row_start in range(0, len(cards), cols_per_row):
-            row_cards = cards[row_start : row_start + cols_per_row]
-            cols = st.columns(cols_per_row)
-            for col, (name, pct, status, detail) in zip(cols, row_cards):
-                with col:
-                    info  = dna_summary(data, name)
-                    color = RARITY_COLORS.get(info["rarity"], "#888")
+    cols_per_row = 3
+    for row_start in range(0, len(cards), cols_per_row):
+        row_cards = cards[row_start : row_start + cols_per_row]
+        cols = st.columns(cols_per_row)
+        for col, (name, pct, status, detail) in zip(cols, row_cards):
+            with col:
+                info  = dna_summary(data, name)
+                color = RARITY_COLORS.get(info["rarity"], "#888")
 
-                    # Status badge colour
-                    if status == "MAX":
-                        badge_bg, badge_fg = "#1a3a1a", "#51ff00"
-                    elif status == "UNLOCKED":
-                        badge_bg, badge_fg = "#1a2a3a", "#4a90e2"
-                    elif status == "FUSING":
-                        badge_bg, badge_fg = "#2a2a0a", "#f1c40f"
-                    else:
-                        badge_bg, badge_fg = "#2a1a1a", "#ff6b6b"
+                if status == "MAX":
+                    badge_bg, badge_fg = "#1a3a1a", "#51ff00"
+                elif status == "UNLOCKED":
+                    badge_bg, badge_fg = "#1a2a3a", "#4a90e2"
+                elif status == "FUSING":
+                    badge_bg, badge_fg = "#2a2a0a", "#f1c40f"
+                else:
+                    badge_bg, badge_fg = "#2a1a1a", "#ff6b6b"
 
-                    # Progress bar colour: gradient from red → yellow → green
-                    if pct >= 75:   bar_color = "#51ff00"
-                    elif pct >= 40: bar_color = "#f1c40f"
-                    else:           bar_color = "#e05555"
+                if pct >= 75:   bar_color = "#51ff00"
+                elif pct >= 40: bar_color = "#f1c40f"
+                else:           bar_color = "#e05555"
 
-                    # Tree counts
-                    tree = build_tree_list(data, name)
-                    n_parents = len(tree) - 1
+                tree      = build_tree_list(data, name)
+                n_parents = len(tree) - 1
 
-                    st.markdown(f"""
-<div class="dash-card" style="border-color: #2a2f3a">
+                st.markdown(f"""
+<div class="dash-card">
   <div class="rarity-bar" style="background:{color}"></div>
   <div style="padding-left:8px">
     <div class="dash-card-name">{name}</div>
@@ -499,28 +442,23 @@ if st.session_state.active_page == "dashboard":
 </div>
 """, unsafe_allow_html=True)
 
-                    # Invisible button overlay for click-to-navigate
-                    if st.button(f"View {name}", key=f"dash_btn_{name}",
-                                 use_container_width=True):
-                        st.session_state.active_page = "tree"
-                        st.session_state.tree_animal = name
-                        st.rerun()
+                if st.button(f"View {name}", key=f"dash_btn_{name}", use_container_width=True):
+                    st.session_state.active_page = "tree"
+                    st.session_state.tree_animal = name
+                    st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: EVOLUTION TREE
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_page == "tree":
 
-    # Default selection: use navigated animal if set, else first in list
     default_idx = 0
     if st.session_state.tree_animal and st.session_state.tree_animal in top_level:
         default_idx = top_level.index(st.session_state.tree_animal)
 
     col_sel, col_gap = st.columns([2, 3])
     with col_sel:
-        selected = st.selectbox("View tree for", top_level,
-                                index=default_idx, key="tree_select")
-    # Clear the navigation flag once we've used it
+        selected = st.selectbox("View tree for", top_level, index=default_idx, key="tree_select")
     st.session_state.tree_animal = None
 
     tree = build_tree_list(data, selected)
@@ -531,36 +469,36 @@ elif st.session_state.active_page == "tree":
         if d.get("parent_1"): parent_of[d["parent_1"]] = (n, "parent_1")
         if d.get("parent_2"): parent_of[d["parent_2"]] = (n, "parent_2")
 
-    st.markdown(f"## 🌳 {selected} — Evolution Tree")
+    st.markdown(f"## {selected} — Evolution Tree")
 
     for i, dino_name in enumerate(tree):
         if dino_name not in data: continue
         info  = dna_summary(data, dino_name)
         color = RARITY_COLORS.get(info["rarity"], "#888")
         indent        = "&nbsp;" * (i * 4) if i > 0 else ""
-        connector     = "┗━ " if i > 0 else ""
-        unlocked_icon = "✅" if info["unlocked"] else "🔒"
+        connector     = "&#x2517;&#x2501; " if i > 0 else ""
+        unlocked_text = "[Unlocked]" if info["unlocked"] else "[Locked]"
 
         if i == 0:
             lvl_text = (f"Needs <strong>{info['levels_needed']}</strong> more levels to unlock"
                         if info["levels_needed"] > 0 else "Ready to fuse / already unlocked")
-            badge_line = f"🧬 DNA needed to level up: <strong>{info['total_dna_needed']}</strong> &nbsp;→&nbsp; {lvl_text}"
+            badge_line = f"DNA needed to level up: <strong>{info['total_dna_needed']}</strong> &nbsp;&rarr;&nbsp; {lvl_text}"
         else:
             child_name, slot = parent_of.get(dino_name, (None, None))
             if child_name and child_name in data:
                 needed = compute_dart_burden(data, dino_name, parent_of, E)
-                badge_line = (f"🧬 DNA needed for <strong>{child_name}</strong>: "
+                badge_line = (f"DNA needed for <strong>{child_name}</strong>: "
                               f"<strong>{needed}</strong> darted DNA &nbsp;|&nbsp; Have: {info['curr_dna']}")
             else:
-                badge_line = f"🧬 Current DNA: {info['curr_dna']}"
+                badge_line = f"Current DNA: {info['curr_dna']}"
 
         p_info = ""
         if info["p1_name"]:
             p1b = compute_dart_burden(data, info["p1_name"], parent_of, E)
-            p_info += f"&nbsp;&nbsp;🔸 <strong>{info['p1_name']}</strong> darts needed: <code>{p1b}</code>"
+            p_info += f"&nbsp;&nbsp;<strong>{info['p1_name']}</strong> darts needed: <code>{p1b}</code>"
         if info["p2_name"]:
             p2b = compute_dart_burden(data, info["p2_name"], parent_of, E)
-            p_info += f"&nbsp;&nbsp;🔸 <strong>{info['p2_name']}</strong> darts needed: <code>{p2b}</code>"
+            p_info += f"&nbsp;&nbsp;<strong>{info['p2_name']}</strong> darts needed: <code>{p2b}</code>"
 
         card_bg = "#2d1f3d" if (info["p1_name"] and info["p2_name"]) else "#161b24"
         st.markdown(f"""
@@ -569,7 +507,7 @@ elif st.session_state.active_page == "tree":
   <div style="padding-left:8px">
     <span style="font-size:1.1rem;font-weight:600">{indent}{connector}{dino_name}</span>
     &nbsp;<span class="rarity-label" style="color:{color}">{info['rarity']}</span>
-    &nbsp;{unlocked_icon}
+    &nbsp;<span style="font-size:0.75rem;opacity:0.6">{unlocked_text}</span>
     <br/>
     <span style="opacity:0.6;font-size:0.85rem">Level {info['level']} &nbsp;|&nbsp; DNA: {info['curr_dna']}</span>
     <br/>
@@ -579,24 +517,23 @@ elif st.session_state.active_page == "tree":
 </div>
 """, unsafe_allow_html=True)
 
-    # ── raw data editor (with name editing + rename logic) ─────────────────
-    with st.expander("📋 Edit raw data"):
-        st.caption("⚠️ Editing the **Name** column will rename the dinosaur and update all parent references automatically.")
+    with st.expander("Edit raw data"):
+        st.caption("Editing the Name column will rename the dinosaur and update all parent references automatically.")
         edit_rows = []
         for n in tree:
             if n in data:
                 d = data[n]
                 edit_rows.append({
-                    "original_name":    d["name"],   # hidden reference
-                    "name":             d["name"],
-                    "rarity":           d["rarity"],
-                    "level":            d["level"],
-                    "curr_dna":         d["curr_dna"],
-                    "unlocked":         d["unlocked"],
-                    "parent_1":         d.get("parent_1") or "",
-                    "parent_2":         d.get("parent_2") or "",
-                    "parent_1_amount":  d.get("parent_1_amount", 0),
-                    "parent_2_amount":  d.get("parent_2_amount", 0),
+                    "original_name":   d["name"],
+                    "name":            d["name"],
+                    "rarity":          d["rarity"],
+                    "level":           d["level"],
+                    "curr_dna":        d["curr_dna"],
+                    "unlocked":        d["unlocked"],
+                    "parent_1":        d.get("parent_1") or "",
+                    "parent_2":        d.get("parent_2") or "",
+                    "parent_1_amount": d.get("parent_1_amount", 0),
+                    "parent_2_amount": d.get("parent_2_amount", 0),
                 })
 
         edited = st.data_editor(
@@ -605,7 +542,7 @@ elif st.session_state.active_page == "tree":
             num_rows="fixed",
             column_config={
                 "original_name":   st.column_config.TextColumn("original_name", disabled=True),
-                "name":            st.column_config.TextColumn("Name ✏️"),
+                "name":            st.column_config.TextColumn("Name"),
                 "rarity":          st.column_config.SelectboxColumn("Rarity", options=RARITIES),
                 "level":           st.column_config.NumberColumn("Level", min_value=1, max_value=30),
                 "curr_dna":        st.column_config.NumberColumn("Current DNA", min_value=0),
@@ -620,19 +557,15 @@ elif st.session_state.active_page == "tree":
             key=f"raw_editor_{selected}"
         )
 
-        if st.button("💾 Save table edits"):
+        if st.button("Save table edits"):
             for row in edited:
                 old_name = row["original_name"]
                 new_name = row["name"].strip()
                 if not new_name:
                     st.error(f"Name cannot be empty (was: {old_name})")
                     continue
-
-                # Handle rename
                 if new_name != old_name and old_name in data:
                     data = rename_dino(data, old_name, new_name)
-
-                # Now update fields under the (possibly new) name
                 target = new_name if new_name in data else old_name
                 if target in data:
                     data[target].update({
@@ -646,7 +579,6 @@ elif st.session_state.active_page == "tree":
                         "parent_1_amount": int(row["parent_1_amount"]),
                         "parent_2_amount": int(row["parent_2_amount"]),
                     })
-
             save_data(data)
             st.session_state.data = data
             st.success("Saved!")
@@ -656,7 +588,7 @@ elif st.session_state.active_page == "tree":
 # PAGE: FUSE
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_page == "fuse":
-    st.markdown("## ⚗️ Fuse DNA")
+    st.markdown("## Fuse DNA")
     st.markdown("Select a hybrid, choose your fuse pack, record actual DNA received — parents are deducted automatically.")
 
     fuseable = [n for n, d in data.items() if d.get("parent_1") and d.get("parent_2")]
@@ -668,9 +600,9 @@ elif st.session_state.active_page == "fuse":
 
         col_a, col_b = st.columns([2, 2])
         with col_a:
-            fuse_dino_name = st.selectbox("🦕 Select Dinosaur to Fuse", fuseable, key="fuse_dino_select")
+            fuse_dino_name = st.selectbox("Select Dinosaur to Fuse", fuseable, key="fuse_dino_select")
         with col_b:
-            pack_key = st.selectbox("📦 Fuse Pack", list(FUSE_PACKS.keys()),
+            pack_key = st.selectbox("Fuse Pack", list(FUSE_PACKS.keys()),
                                     format_func=lambda k: FUSE_PACKS[k]["label"],
                                     key="fuse_pack_select")
 
@@ -687,35 +619,35 @@ elif st.session_state.active_page == "fuse":
         p2_have   = data[p2_name]["curr_dna"] if p2_name in data else 0
         expected  = round(E * count, 1)
 
-        st.markdown("#### 💸 Fuse Cost")
+        st.markdown("#### Fuse Cost")
         c1, c2 = st.columns(2)
         with c1:
             p1_ok    = p1_have >= total_p1
             p1_color = "#51ff00" if p1_ok else "#ff6b6b"
-            st.markdown(f'<span class="cost-pill">🔸 <strong>{p1_name}</strong>: '
+            st.markdown(f'<span class="cost-pill"><strong>{p1_name}</strong>: '
                         f'<span style="color:{p1_color}">{total_p1} needed</span> / {p1_have} available</span>',
                         unsafe_allow_html=True)
         with c2:
             p2_ok    = p2_have >= total_p2
             p2_color = "#51ff00" if p2_ok else "#ff6b6b"
-            st.markdown(f'<span class="cost-pill">🔸 <strong>{p2_name}</strong>: '
+            st.markdown(f'<span class="cost-pill"><strong>{p2_name}</strong>: '
                         f'<span style="color:{p2_color}">{total_p2} needed</span> / {p2_have} available</span>',
                         unsafe_allow_html=True)
 
         if not p1_ok or not p2_ok:
-            st.error(f"⚠️ Not enough parent DNA for {count}× fuse(s).")
+            st.error(f"Not enough parent DNA for {count}x fuse(s).")
 
         st.markdown("---")
-        st.markdown(f"#### 📊 Expected DNA from {pack['label']}: "
+        st.markdown(f"#### Expected DNA from {pack['label']}: "
                     f"<span style='color:#f1c40f;font-size:1.2rem'>{expected}</span> "
-                    f"<span style='opacity:0.6;font-size:0.85rem'>({E:.2f} avg/fuse × {count})</span>",
+                    f"<span style='opacity:0.6;font-size:0.85rem'>({E:.2f} avg/fuse x {count})</span>",
                     unsafe_allow_html=True)
         st.markdown("---")
-        st.markdown("#### 🧬 Record Actual Fuse Result")
+        st.markdown("#### Record Actual Fuse Result")
 
         with st.form("fuse_form"):
             actual_dna = st.number_input(
-                f"Actual DNA received",
+                "Actual DNA received",
                 min_value=0, value=int(expected), step=10,
                 help=f"Total DNA from all {count} fuse(s). Each fuse is a multiple of 10."
             )
@@ -724,31 +656,30 @@ elif st.session_state.active_page == "fuse":
             if count > 1:
                 per_avg = round(actual_dna / count, 1)
                 if diff > 0:
-                    st.markdown(f'<span class="fuse-result-good">🎉 +{diff:.0f} above expected! ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
+                    st.markdown(f'<span class="fuse-result-good">+{diff:.0f} above expected ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
                 elif diff < 0:
-                    st.markdown(f'<span class="fuse-result-bad">😞 {diff:.0f} below expected ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
+                    st.markdown(f'<span class="fuse-result-bad">{diff:.0f} below expected ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
                 else:
-                    st.markdown(f'<span class="fuse-result-avg">😐 Exactly average ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
+                    st.markdown(f'<span class="fuse-result-avg">Exactly average ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
             else:
                 if actual_dna >= 30:
-                    st.markdown('<span class="fuse-result-good">🎉 Great fuse!</span>', unsafe_allow_html=True)
+                    st.markdown('<span class="fuse-result-good">Great fuse!</span>', unsafe_allow_html=True)
                 elif actual_dna == 10:
-                    st.markdown('<span class="fuse-result-bad">😞 Min roll.</span>', unsafe_allow_html=True)
+                    st.markdown('<span class="fuse-result-bad">Min roll.</span>', unsafe_allow_html=True)
                 else:
-                    st.markdown('<span class="fuse-result-avg">😐 Average fuse.</span>', unsafe_allow_html=True)
+                    st.markdown('<span class="fuse-result-avg">Average fuse.</span>', unsafe_allow_html=True)
 
             st.markdown(f"<span style='opacity:0.6;font-size:0.82rem'>"
-                        f"Deducts <strong>{total_p1} {p1_name}</strong> & "
+                        f"Deducts <strong>{total_p1} {p1_name}</strong> and "
                         f"<strong>{total_p2} {p2_name}</strong> DNA, "
                         f"adds <strong>{actual_dna}</strong> DNA to <strong>{fuse_dino_name}</strong>.</span>",
                         unsafe_allow_html=True)
 
-            if st.form_submit_button(f"⚗️ Apply {pack['label']}", disabled=(not p1_ok or not p2_ok)):
+            if st.form_submit_button(f"Apply {pack['label']}", disabled=(not p1_ok or not p2_ok)):
                 if p1_name in data: data[p1_name]["curr_dna"] = max(0, data[p1_name]["curr_dna"] - total_p1)
                 if p2_name in data: data[p2_name]["curr_dna"] = max(0, data[p2_name]["curr_dna"] - total_p2)
                 data[fuse_dino_name]["curr_dna"] = data[fuse_dino_name].get("curr_dna", 0) + actual_dna
 
-                # Auto-level
                 dna_table  = rarity_map[fuse_dino["rarity"]]
                 curr_level = data[fuse_dino_name]["level"]
                 curr_dna   = data[fuse_dino_name]["curr_dna"]
@@ -776,28 +707,28 @@ elif st.session_state.active_page == "fuse":
 
         if st.session_state.fuse_result:
             r = st.session_state.fuse_result
-            diff = r["actual"] - r["expected"]
+            diff         = r["actual"] - r["expected"]
             banner_color = "#1a3a1a" if diff >= 0 else "#3a1a1a"
             diff_str     = f"+{diff:.0f}" if diff >= 0 else f"{diff:.0f}"
-            level_line   = (f"<br/>🏆 <strong>Leveled up {r['leveled_up']}× → Lv {r['new_level']}</strong> "
+            level_line   = (f"<br/><strong>Leveled up {r['leveled_up']}x to Lv {r['new_level']}</strong> "
                             f"(remaining DNA: {r['new_dna']})" if r["leveled_up"] > 0 else "")
             st.markdown(f"""
 <div style="background:{banner_color};border-radius:10px;padding:1rem 1.4rem;
             margin-top:1rem;border:1px solid #2a3a2a">
-  <strong>✅ Fuse applied!</strong><br/>
-  🧬 <strong>{r['dino']}</strong> +{r['actual']} DNA
+  <strong>Fuse applied.</strong><br/>
+  <strong>{r['dino']}</strong> +{r['actual']} DNA
   <span style="opacity:0.7">({diff_str} vs expected {r['expected']:.0f})</span><br/>
-  🔸 <strong>{r['p1_name']}</strong> −{r['p1_cost']} &nbsp;|&nbsp;
-  🔸 <strong>{r['p2_name']}</strong> −{r['p2_cost']}
+  <strong>{r['p1_name']}</strong> -{r['p1_cost']} &nbsp;|&nbsp;
+  <strong>{r['p2_name']}</strong> -{r['p2_cost']}
   {level_line}
 </div>
 """, unsafe_allow_html=True)
-            if st.button("✖ Dismiss"):
+            if st.button("Dismiss"):
                 st.session_state.fuse_result = None
                 st.rerun()
 
         st.markdown("---")
-        st.markdown("#### 📖 Fuse Pack Reference")
+        st.markdown("#### Fuse Pack Reference")
         ref_cols = st.columns(len(FUSE_PACKS))
         for col, (pk, pv) in zip(ref_cols, FUSE_PACKS.items()):
-            col.metric(pv["label"], f"{round(E * pv['count'], 1)} DNA", f"{pv['count']}× fuse")
+            col.metric(pv["label"], f"{round(E * pv['count'], 1)} DNA", f"{pv['count']}x fuse")
