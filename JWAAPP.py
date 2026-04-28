@@ -200,10 +200,18 @@ def rename_dino(data, old_name, new_name):
         if d.get("parent_2") == old_name: d["parent_2"] = new_name
     return data
 
-# ── tree HTML renderer ────────────────────────────────────────────────────────
-def render_node_html(data, node_name, parent_of, E, is_root=False):
+# ── tree renderer ─────────────────────────────────────────────────────────────
+LINE = "#3a4555"
+LINE_H = 32  # px of vertical connector segments
+
+def render_tree_html(data, node_name, parent_of, E, is_root=False):
+    """
+    Recursively build a top-down flexbox tree.
+    Root at top, its ingredients (parents) fan out below it.
+    """
     if node_name not in data:
         return ""
+
     info     = dna_summary(data, node_name)
     color    = RARITY_COLORS.get(info["rarity"], "#888")
     d        = data[node_name]
@@ -211,9 +219,8 @@ def render_node_html(data, node_name, parent_of, E, is_root=False):
     p2       = d.get("parent_2")
     is_hybrid = bool(p1 and p2)
     card_bg  = "#2d1f3d" if is_hybrid else "#161b24"
-    uc       = "#51ff00" if info["unlocked"] else "#666"
-    ut       = "Unlocked" if info["unlocked"] else "Locked"
 
+    # ── sub-text for card ────────────────────────────────────────────────────
     if is_root:
         if info["levels_needed"] > 0:
             sub = f"Need {info['levels_needed']} more levels to unlock"
@@ -221,237 +228,207 @@ def render_node_html(data, node_name, parent_of, E, is_root=False):
             total = int(info["curr_dna"] + info["total_dna_needed"])
             sub = f"{int(info['curr_dna']):,} / {total:,} DNA"
         else:
-            sub = f"{info['curr_dna']:,} DNA &mdash; ready"
+            sub = f"{info['curr_dna']:,} DNA — ready"
     else:
-        child_name, slot = parent_of.get(node_name, (None, None))
-        if child_name and child_name in data:
-            needed = compute_dart_burden(data, node_name, parent_of, E)
-            if needed == 0:
-                sub = f"<span style='color:#51ff00'>Satisfied</span> &middot; have {info['curr_dna']:,}"
-            else:
-                have     = info["curr_dna"]
-                have_col = "#51ff00" if have >= needed else "#f1c40f" if have >= needed * 0.5 else "#ff6b6b"
-                sub = (f"Need <strong>{int(needed):,}</strong> darts"
-                       f"<br><span style='color:{have_col}'>Have {have:,}</span>")
+        needed = compute_dart_burden(data, node_name, parent_of, E)
+        have   = info["curr_dna"]
+        if needed == 0:
+            sub = f'<span style="color:#51ff00">Satisfied</span>'
         else:
-            sub = f"{info['curr_dna']:,} DNA"
+            pct_have = have / needed
+            hcol = "#51ff00" if pct_have >= 1.0 else "#f1c40f" if pct_have >= 0.5 else "#ff6b6b"
+            sub = f"Need <b>{int(needed):,}</b> darts<br><span style='color:{hcol}'>Have {have:,}</span>"
 
-    card = f"""<div class="jwa-tnode" style="background:{card_bg};border-top-color:{color}">
-  <div class="jwa-tnode-name" style="color:{color}">{node_name}</div>
-  <div class="jwa-tnode-rarity" style="color:{color}">{info['rarity']}</div>
-  <div class="jwa-tnode-stats">Lv {info['level']} &nbsp;&middot;&nbsp; {info['curr_dna']:,} DNA</div>
-  <div class="jwa-tnode-sub">{sub}</div>
-  <div style="font-size:0.62rem;color:{uc};margin-top:0.25rem;letter-spacing:0.5px">{ut}</div>
+    uc = "#51ff00" if info["unlocked"] else "#555"
+    ut = "Unlocked" if info["unlocked"] else "Locked"
+
+    # ── build children ────────────────────────────────────────────────────────
+    children = []
+    if p1 and p1 in data:
+        children.append(render_tree_html(data, p1, parent_of, E, False))
+    if p2 and p2 in data:
+        children.append(render_tree_html(data, p2, parent_of, E, False))
+
+    has_ch = len(children) > 0
+
+    # card — if it has children, we add a downward stub via ::after in CSS
+    card_html = f"""<div class="t-card {'t-card-parent' if has_ch else ''}"
+  style="background:{card_bg};border-top:3px solid {color};border-color:{color}">
+  <div class="t-name" style="color:{color}">{node_name}</div>
+  <div class="t-rar"  style="color:{color}">{info['rarity']}</div>
+  <div class="t-stats">Lv {info['level']} &nbsp;·&nbsp; {info['curr_dna']:,} DNA</div>
+  <div class="t-sub">{sub}</div>
+  <div class="t-lock" style="color:{uc}">{ut}</div>
 </div>"""
 
-    children_html = ""
-    if p1 and p1 in data:
-        children_html += f"<li>{render_node_html(data, p1, parent_of, E)}</li>"
-    if p2 and p2 in data:
-        children_html += f"<li>{render_node_html(data, p2, parent_of, E)}</li>"
+    if not has_ch:
+        return f'<div class="t-node">{card_html}</div>'
 
-    if children_html:
-        return f"{card}<ul>{children_html}</ul>"
-    return card
+    # wrap each child in a .t-cwrap for the connector CSS
+    wraps = "".join(f'<div class="t-cwrap">{c}</div>' for c in children)
+
+    return f"""<div class="t-node">
+{card_html}
+<div class="t-children">{wraps}</div>
+</div>"""
+
 
 # ── page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="JWA Tracker", page_icon="", layout="wide")
 
-st.markdown("""
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;600&display=swap');
 
-html, body, [class*="css"] {
+html, body, [class*="css"] {{
     font-family: 'DM Sans', sans-serif;
     background: #0d0f14;
     color: #e8e4dc;
-}
-h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
+}}
+h1, h2, h3 {{ font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }}
 
-/* ── visual tree ── */
-.jwa-tree-wrap {
+/* ══════════════════════════════════════════════════
+   TREE DIAGRAM
+══════════════════════════════════════════════════ */
+.t-scroll {{
     overflow-x: auto;
-    padding: 1rem 2rem 3rem;
-}
-.jwa-tree,
-.jwa-tree ul,
-.jwa-tree li {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
-.jwa-tree > ul { padding-top: 0; }
-.jwa-tree ul {
-    display: flex;
-    justify-content: center;
-    padding-top: 28px;
-    position: relative;
-}
-/* vertical line from ul up to parent */
-.jwa-tree ul::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 2px;
-    height: 28px;
-    background: #3a4555;
-}
-/* suppress line above root */
-.jwa-tree > ul::before { display: none; }
-.jwa-tree li {
-    position: relative;
-    padding: 0 10px;
-    display: flex;
+    overflow-y: visible;
+    padding: 2rem 2rem 3rem;
+}}
+
+/* Each node: stacked vertically, centred */
+.t-node {{
+    display: inline-flex;
     flex-direction: column;
     align-items: center;
-}
-/* horizontal bar across siblings */
-.jwa-tree li::before,
-.jwa-tree li::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    width: 50%;
-    height: 28px;
-    border-top: 2px solid #3a4555;
-}
-.jwa-tree li::before { right: 50%; }
-.jwa-tree li::after  { left: 50%; border-left: 2px solid #3a4555; }
-/* only child — no horizontal bar */
-.jwa-tree li:only-child::before,
-.jwa-tree li:only-child::after { display: none; }
-/* cap left end and right end */
-.jwa-tree li:first-child::before { border: none; }
-.jwa-tree li:last-child::after   { border-top: 2px solid #3a4555; border-left: none; }
-.jwa-tree li:last-child::before  {
-    border-right: 2px solid #3a4555;
-    border-radius: 0 6px 0 0;
-}
-.jwa-tree li:first-child::after  { border-radius: 6px 0 0 0; }
-/* vertical line from horizontal bar down to node */
-.jwa-tree li > .jwa-tnode {
     position: relative;
-    margin-top: 28px;
-}
-.jwa-tree li > .jwa-tnode::before {
+}}
+
+/* ── card ── */
+.t-card {{
+    border: 1px solid #2a2f3a;
+    border-radius: 10px;
+    padding: 0.7rem 1rem 0.65rem;
+    min-width: 150px;
+    max-width: 200px;
+    text-align: center;
+    position: relative;
+    background: #161b24;
+    flex-shrink: 0;
+}}
+.t-name  {{ font-family:'Bebas Neue',sans-serif; font-size:1.05rem; letter-spacing:1.2px; line-height:1.1; }}
+.t-rar   {{ font-size:0.6rem; text-transform:uppercase; letter-spacing:1.4px; opacity:.65; margin-top:.05rem; }}
+.t-stats {{ font-size:0.72rem; opacity:.55; margin-top:.3rem; }}
+.t-sub   {{ font-size:0.72rem; margin-top:.3rem; line-height:1.45; min-height:1.8em; }}
+.t-lock  {{ font-size:0.62rem; margin-top:.3rem; letter-spacing:.5px; }}
+
+/* Vertical stub DOWN from a card that has children */
+.t-card-parent::after {{
     content: '';
     position: absolute;
-    top: -28px;
+    bottom: -{LINE_H}px;
     left: 50%;
     transform: translateX(-50%);
     width: 2px;
-    height: 28px;
-    background: #3a4555;
-}
-.jwa-tree li:only-child > .jwa-tnode::before { display: none; }
+    height: {LINE_H}px;
+    background: {LINE};
+    z-index: 1;
+}}
 
-/* node card */
-.jwa-tnode {
-    border: 1px solid #2a2f3a;
-    border-top: 3px solid;
-    border-radius: 8px;
-    padding: 0.65rem 0.9rem 0.6rem;
-    min-width: 148px;
-    max-width: 190px;
-    text-align: center;
-    background: #161b24;
-}
-.jwa-tnode-name {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 1.05rem;
-    letter-spacing: 1.2px;
-    line-height: 1.1;
-}
-.jwa-tnode-rarity {
-    font-size: 0.6rem;
-    text-transform: uppercase;
-    letter-spacing: 1.4px;
-    opacity: 0.65;
-    margin-top: 0.05rem;
-}
-.jwa-tnode-stats {
-    font-size: 0.72rem;
-    opacity: 0.55;
-    margin-top: 0.3rem;
-}
-.jwa-tnode-sub {
-    font-size: 0.72rem;
-    margin-top: 0.25rem;
-    line-height: 1.4;
-}
-
-/* ── dashboard cards ── */
-.dash-card {
-    background: #161b24;
-    border: 1px solid #2a2f3a;
-    border-radius: 12px;
-    padding: 1.1rem 1.3rem 1rem;
+/* ── children row ── */
+.t-children {{
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: {LINE_H}px;   /* room for the stub above */
     position: relative;
-    overflow: hidden;
-    margin-bottom: 0.2rem;
-}
-.dash-card .rarity-bar {
-    position: absolute; left: 0; top: 0; bottom: 0;
-    width: 4px; border-radius: 12px 0 0 12px;
-}
-.dash-card-name {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 1.3rem; letter-spacing: 1.5px; padding-left: 8px;
-}
-.dash-card-meta {
-    font-size: 0.78rem; opacity: 0.6; padding-left: 8px;
-    margin-top: 0.1rem; margin-bottom: 0.4rem;
-}
-.progress-track {
-    background: #0d0f14; border-radius: 99px;
-    height: 8px; margin: 0.4rem 0 0.25rem; overflow: hidden;
-}
-.progress-track-thin {
-    background: #0d0f14; border-radius: 99px;
-    height: 5px; margin: 0.25rem 0 0.2rem; overflow: hidden;
-}
-.progress-fill { height: 100%; border-radius: 99px; transition: width 0.3s ease; }
-.progress-label {
-    font-size: 0.7rem; opacity: 0.5; letter-spacing: 0.5px;
-    text-transform: uppercase; margin-top: 0.6rem; margin-bottom: 0;
-}
-.dash-pct { font-family: 'Bebas Neue', sans-serif; font-size: 1.6rem; letter-spacing: 1px; }
-.dash-sub-pct { font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 1px; opacity: 0.85; }
-.dash-status {
-    font-size: 0.7rem; font-weight: 700; letter-spacing: 1.5px;
-    text-transform: uppercase; border-radius: 4px; padding: 0.1rem 0.4rem;
-    display: inline-block; margin-left: 0.4rem; vertical-align: middle;
-}
-.dash-detail { font-size: 0.78rem; opacity: 0.55; margin-top: 0.1rem; padding-left: 1px; }
-.sub-breakdown { margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid #2a2f3a; }
-details.sub-details summary { cursor: pointer; list-style: none; outline: none; user-select: none; }
-details.sub-details summary::-webkit-details-marker { display: none; }
-details.sub-details summary::after { content: " [show]"; font-size: 0.7rem; opacity: 0.4; }
-details.sub-details[open] summary::after { content: " [hide]"; }
-.sub-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.74rem; opacity: 0.75; margin-top: 0.25rem; }
-.sub-row-name { flex: 1; }
-.sub-row-nums { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+}}
 
-/* ── fuse ── */
-.fuse-panel {
-    background: #0f1a14; border: 1px solid #1e8a5e;
-    border-radius: 12px; padding: 1.4rem 1.6rem; margin-bottom: 1.2rem;
-}
-.fuse-result-good { color: #51ff00; font-weight: 700; }
-.fuse-result-avg  { color: #f1c40f; font-weight: 700; }
-.fuse-result-bad  { color: #ff6b6b; font-weight: 700; }
-.cost-pill {
-    display: inline-block; background: #1e2530;
-    border-radius: 20px; padding: 0.2rem 0.75rem;
-    font-size: 0.82rem; margin: 0.2rem 0.2rem 0 0;
-}
-.stButton>button {
-    background: #1e8a5e; color: white; border: none;
-    border-radius: 6px; font-family: 'DM Sans', sans-serif; font-weight: 600;
-}
-.stButton>button:hover { background: #25a870; }
+/* Each child wrapper */
+.t-cwrap {{
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 16px;
+    position: relative;
+}}
+
+/* Horizontal bar across top of children area */
+.t-cwrap::before {{
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: {LINE};
+}}
+/* left-most: bar only on right half */
+.t-cwrap:first-child::before {{ left: 50%; }}
+/* right-most: bar only on left half */
+.t-cwrap:last-child::before  {{ right: 50%; }}
+/* single child: no horizontal bar at all */
+.t-cwrap:only-child::before  {{ display: none; }}
+
+/* Vertical stub DOWN from horizontal bar to child card */
+.t-cwrap::after {{
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: {LINE_H}px;
+    background: {LINE};
+}}
+
+/* Push the child node down by LINE_H to clear the stub */
+.t-cwrap > .t-node {{
+    margin-top: {LINE_H}px;
+}}
+
+/* ══════════════════════════════════════════════════
+   DASHBOARD CARDS
+══════════════════════════════════════════════════ */
+.dash-card {{
+    background: #161b24; border: 1px solid #2a2f3a;
+    border-radius: 12px; padding: 1.1rem 1.3rem 1rem;
+    position: relative; overflow: hidden; margin-bottom: .2rem;
+}}
+.dash-card .rarity-bar {{
+    position: absolute; left:0; top:0; bottom:0;
+    width:4px; border-radius:12px 0 0 12px;
+}}
+.dash-card-name {{ font-family:'Bebas Neue',sans-serif; font-size:1.3rem; letter-spacing:1.5px; padding-left:8px; }}
+.dash-card-meta {{ font-size:.78rem; opacity:.6; padding-left:8px; margin-top:.1rem; margin-bottom:.4rem; }}
+.progress-track {{ background:#0d0f14; border-radius:99px; height:8px; margin:.4rem 0 .25rem; overflow:hidden; }}
+.progress-track-thin {{ background:#0d0f14; border-radius:99px; height:5px; margin:.25rem 0 .2rem; overflow:hidden; }}
+.progress-fill {{ height:100%; border-radius:99px; transition:width .3s ease; }}
+.progress-label {{ font-size:.7rem; opacity:.5; letter-spacing:.5px; text-transform:uppercase; margin-top:.6rem; margin-bottom:0; }}
+.dash-pct {{ font-family:'Bebas Neue',sans-serif; font-size:1.6rem; letter-spacing:1px; }}
+.dash-sub-pct {{ font-family:'Bebas Neue',sans-serif; font-size:1rem; letter-spacing:1px; opacity:.85; }}
+.dash-status {{ font-size:.7rem; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; border-radius:4px; padding:.1rem .4rem; display:inline-block; margin-left:.4rem; vertical-align:middle; }}
+.dash-detail {{ font-size:.78rem; opacity:.55; margin-top:.1rem; padding-left:1px; }}
+.sub-breakdown {{ margin-top:.6rem; padding-top:.5rem; border-top:1px solid #2a2f3a; }}
+details.sub-details summary {{ cursor:pointer; list-style:none; outline:none; user-select:none; }}
+details.sub-details summary::-webkit-details-marker {{ display:none; }}
+details.sub-details summary::after {{ content:" [show]"; font-size:.7rem; opacity:.4; }}
+details.sub-details[open] summary::after {{ content:" [hide]"; }}
+.sub-row {{ display:flex; justify-content:space-between; align-items:center; font-size:.74rem; opacity:.75; margin-top:.25rem; }}
+.sub-row-name {{ flex:1; }}
+.sub-row-nums {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }}
+
+/* ══════════════════════════════════════════════════
+   FUSE
+══════════════════════════════════════════════════ */
+.fuse-panel {{ background:#0f1a14; border:1px solid #1e8a5e; border-radius:12px; padding:1.4rem 1.6rem; margin-bottom:1.2rem; }}
+.fuse-result-good {{ color:#51ff00; font-weight:700; }}
+.fuse-result-avg  {{ color:#f1c40f; font-weight:700; }}
+.fuse-result-bad  {{ color:#ff6b6b; font-weight:700; }}
+.cost-pill {{ display:inline-block; background:#1e2530; border-radius:20px; padding:.2rem .75rem; font-size:.82rem; margin:.2rem .2rem 0 0; }}
+.stButton>button {{ background:#1e8a5e; color:white; border:none; border-radius:6px; font-family:'DM Sans',sans-serif; font-weight:600; }}
+.stButton>button:hover {{ background:#25a870; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -531,18 +508,15 @@ nav_cols = st.columns([1, 1, 1, 5])
 with nav_cols[0]:
     if st.button("Dashboard", use_container_width=True,
                  type="primary" if st.session_state.active_page == "dashboard" else "secondary"):
-        st.session_state.active_page = "dashboard"
-        st.rerun()
+        st.session_state.active_page = "dashboard"; st.rerun()
 with nav_cols[1]:
     if st.button("Tree", use_container_width=True,
                  type="primary" if st.session_state.active_page == "tree" else "secondary"):
-        st.session_state.active_page = "tree"
-        st.rerun()
+        st.session_state.active_page = "tree"; st.rerun()
 with nav_cols[2]:
     if st.button("Fuse", use_container_width=True,
                  type="primary" if st.session_state.active_page == "fuse" else "secondary"):
-        st.session_state.active_page = "fuse"
-        st.rerun()
+        st.session_state.active_page = "fuse"; st.rerun()
 
 st.markdown("---")
 
@@ -577,7 +551,7 @@ if st.session_state.active_page == "dashboard":
             with col:
                 info  = dna_summary(data, name)
                 color = RARITY_COLORS.get(info["rarity"], "#888")
-                if status == "MAX":      badge_bg, badge_fg = "#1a3a1a", "#51ff00"
+                if status == "MAX":        badge_bg, badge_fg = "#1a3a1a", "#51ff00"
                 elif status == "UNLOCKED": badge_bg, badge_fg = "#1a2a3a", "#4a90e2"
                 elif status == "FUSING":   badge_bg, badge_fg = "#2a2a0a", "#f1c40f"
                 else:                      badge_bg, badge_fg = "#2a1a1a", "#ff6b6b"
@@ -600,15 +574,13 @@ if st.session_state.active_page == "dashboard":
                             val_str = f"{int(node_curr):,} / {int(node_burden):,} &nbsp;<span style='opacity:0.5'>need {int(still):,}</span>"
                         rows_html += f"""<div class="sub-row">
   <span class="sub-row-name" style="color:{node_color}">{node_name}</span>
-  <span class="sub-row-nums">{val_str} &nbsp;
+  <span class="sub-row-nums">{val_str}&nbsp;
     <span style="color:{sub_bar_color};min-width:40px;display:inline-block;text-align:right">{node_pct:.0f}%</span>
   </span>
 </div>"""
                     sub_section = f"""<div class="sub-breakdown">
-  <div class="progress-label">Sub-creature darted DNA &nbsp;<span style="opacity:0.8">{sub_held:,.0f} / {sub_required:,.0f}</span></div>
-  <div class="progress-track-thin">
-    <div class="progress-fill" style="width:{sub_pct:.1f}%;background:{sub_bar_color}"></div>
-  </div>
+  <div class="progress-label">Sub-creature darted DNA &nbsp;<span style="opacity:.8">{sub_held:,.0f} / {sub_required:,.0f}</span></div>
+  <div class="progress-track-thin"><div class="progress-fill" style="width:{sub_pct:.1f}%;background:{sub_bar_color}"></div></div>
   <details class="sub-details">
     <summary><span class="dash-sub-pct" style="color:{sub_bar_color}">{sub_pct:.1f}%</span></summary>
     {rows_html}
@@ -656,15 +628,13 @@ elif st.session_state.active_page == "tree":
 
     st.markdown(f"## {selected} — Evolution Tree")
 
-    # ── visual tree ───────────────────────────────────────────────────────────
-    node_html = render_node_html(data, selected, parent_of, E, is_root=True)
-    st.markdown(f"""
-<div class="jwa-tree-wrap">
-  <div class="jwa-tree">
-    <ul><li>{node_html}</li></ul>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+    # ── render proper tree diagram ────────────────────────────────────────────
+    tree_html = render_tree_html(data, selected, parent_of, E, is_root=True)
+    st.markdown(
+        f'<div class="t-scroll"><div style="display:inline-flex;justify-content:center;width:100%">'
+        f'{tree_html}</div></div>',
+        unsafe_allow_html=True
+    )
 
     # ── raw data editor ───────────────────────────────────────────────────────
     with st.expander("Edit raw data"):
@@ -685,11 +655,8 @@ elif st.session_state.active_page == "tree":
                     "parent_1_amount": d.get("parent_1_amount", 0),
                     "parent_2_amount": d.get("parent_2_amount", 0),
                 })
-
         edited = st.data_editor(
-            edit_rows,
-            use_container_width=True,
-            num_rows="fixed",
+            edit_rows, use_container_width=True, num_rows="fixed",
             column_config={
                 "original_name":   st.column_config.TextColumn("original_name", disabled=True),
                 "name":            st.column_config.TextColumn("Name"),
@@ -706,14 +673,12 @@ elif st.session_state.active_page == "tree":
                           "parent_1","parent_2","parent_1_amount","parent_2_amount"],
             key=f"raw_editor_{selected}"
         )
-
         if st.button("Save table edits"):
             for row in edited:
                 old_name = row["original_name"]
                 new_name = row["name"].strip()
                 if not new_name:
-                    st.error(f"Name cannot be empty (was: {old_name})")
-                    continue
+                    st.error(f"Name cannot be empty (was: {old_name})"); continue
                 if new_name != old_name and old_name in data:
                     data = rename_dino(data, old_name, new_name)
                 target = new_name if new_name in data else old_name
@@ -772,17 +737,15 @@ elif st.session_state.active_page == "fuse":
         st.markdown("#### Fuse Cost")
         c1, c2 = st.columns(2)
         with c1:
-            p1_ok    = p1_have >= total_p1
-            p1_color = "#51ff00" if p1_ok else "#ff6b6b"
+            p1_ok = p1_have >= total_p1
             st.markdown(f'<span class="cost-pill"><strong>{p1_name}</strong>: '
-                        f'<span style="color:{p1_color}">{total_p1} needed</span> / {p1_have} available</span>',
-                        unsafe_allow_html=True)
+                        f'<span style="color:{"#51ff00" if p1_ok else "#ff6b6b"}">{total_p1} needed</span>'
+                        f' / {p1_have} available</span>', unsafe_allow_html=True)
         with c2:
-            p2_ok    = p2_have >= total_p2
-            p2_color = "#51ff00" if p2_ok else "#ff6b6b"
+            p2_ok = p2_have >= total_p2
             st.markdown(f'<span class="cost-pill"><strong>{p2_name}</strong>: '
-                        f'<span style="color:{p2_color}">{total_p2} needed</span> / {p2_have} available</span>',
-                        unsafe_allow_html=True)
+                        f'<span style="color:{"#51ff00" if p2_ok else "#ff6b6b"}">{total_p2} needed</span>'
+                        f' / {p2_have} available</span>', unsafe_allow_html=True)
 
         if not p1_ok or not p2_ok:
             st.error(f"Not enough parent DNA for {count}x fuse(s).")
@@ -796,29 +759,22 @@ elif st.session_state.active_page == "fuse":
         st.markdown("#### Record Actual Fuse Result")
 
         with st.form("fuse_form"):
-            actual_dna = st.number_input(
-                "Actual DNA received", min_value=0, value=int(expected), step=10,
-                help=f"Total DNA from all {count} fuse(s). Each fuse is a multiple of 10."
-            )
+            actual_dna = st.number_input("Actual DNA received", min_value=0, value=int(expected), step=10,
+                                         help=f"Total DNA from all {count} fuse(s).")
             diff = actual_dna - expected
             if count > 1:
                 per_avg = round(actual_dna / count, 1)
-                if diff > 0:
-                    st.markdown(f'<span class="fuse-result-good">+{diff:.0f} above expected ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
-                elif diff < 0:
-                    st.markdown(f'<span class="fuse-result-bad">{diff:.0f} below expected ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown(f'<span class="fuse-result-avg">Exactly average ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
+                if diff > 0:   st.markdown(f'<span class="fuse-result-good">+{diff:.0f} above expected ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
+                elif diff < 0: st.markdown(f'<span class="fuse-result-bad">{diff:.0f} below expected ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
+                else:          st.markdown(f'<span class="fuse-result-avg">Exactly average ({per_avg} avg/fuse)</span>', unsafe_allow_html=True)
             else:
                 if actual_dna >= 30:   st.markdown('<span class="fuse-result-good">Great fuse!</span>', unsafe_allow_html=True)
                 elif actual_dna == 10: st.markdown('<span class="fuse-result-bad">Min roll.</span>', unsafe_allow_html=True)
                 else:                  st.markdown('<span class="fuse-result-avg">Average fuse.</span>', unsafe_allow_html=True)
 
-            st.markdown(f"<span style='opacity:0.6;font-size:0.82rem'>"
-                        f"Deducts <strong>{total_p1} {p1_name}</strong> and "
-                        f"<strong>{total_p2} {p2_name}</strong> DNA, "
-                        f"adds <strong>{actual_dna}</strong> DNA to <strong>{fuse_dino_name}</strong>.</span>",
-                        unsafe_allow_html=True)
+            st.markdown(f"<span style='opacity:0.6;font-size:0.82rem'>Deducts <strong>{total_p1} {p1_name}</strong> and "
+                        f"<strong>{total_p2} {p2_name}</strong> DNA, adds <strong>{actual_dna}</strong> DNA to "
+                        f"<strong>{fuse_dino_name}</strong>.</span>", unsafe_allow_html=True)
 
             if st.form_submit_button(f"Apply {pack['label']}", disabled=(not p1_ok or not p2_ok)):
                 if p1_name in data: data[p1_name]["curr_dna"] = max(0, data[p1_name]["curr_dna"] - total_p1)
@@ -831,7 +787,7 @@ elif st.session_state.active_page == "fuse":
                 while curr_level < 30:
                     cost = dna_table.get(curr_level + 1)
                     if cost is None or curr_dna < cost: break
-                    curr_dna  -= cost; curr_level += 1; leveled_up += 1
+                    curr_dna -= cost; curr_level += 1; leveled_up += 1
                 data[fuse_dino_name]["level"]    = curr_level
                 data[fuse_dino_name]["curr_dna"] = curr_dna
                 save_data(data)
@@ -854,7 +810,7 @@ elif st.session_state.active_page == "fuse":
             level_line   = (f"<br/><strong>Leveled up {r['leveled_up']}x to Lv {r['new_level']}</strong> "
                             f"(remaining DNA: {r['new_dna']})" if r["leveled_up"] > 0 else "")
             st.markdown(f"""<div style="background:{banner_color};border-radius:10px;padding:1rem 1.4rem;
-                        margin-top:1rem;border:1px solid #2a3a2a">
+                            margin-top:1rem;border:1px solid #2a3a2a">
   <strong>Fuse applied.</strong><br/>
   <strong>{r['dino']}</strong> +{r['actual']} DNA
   <span style="opacity:0.7">({diff_str} vs expected {r['expected']:.0f})</span><br/>
