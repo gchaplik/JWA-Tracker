@@ -138,8 +138,9 @@ def compute_dart_burden(data, dino_name, parent_of, E):
 
 def min_one_fuse_burden(data, dino_name, parent_of, raw_burden):
     """
-    Clamp raw_burden to at least one fuse cost from the immediate parent.
-    You can never do a partial fuse, so the floor is always fuse_amt.
+    Round raw_burden UP to the nearest whole fuse cost.
+    e.g. fuse_amt=200, raw_burden=176 → 200
+         fuse_amt=200, raw_burden=201 → 400
     If burden is 0 (creature not needed), leave it at 0.
     """
     if raw_burden <= 0:
@@ -149,7 +150,9 @@ def min_one_fuse_burden(data, dino_name, parent_of, raw_burden):
         return raw_burden
     fuse_amt = (data[child_name].get("parent_1_amount", 50) if slot == "parent_1"
                 else data[child_name].get("parent_2_amount", 50))
-    return max(raw_burden, float(fuse_amt))
+    if fuse_amt <= 0:
+        return raw_burden
+    return float(math.ceil(raw_burden / fuse_amt) * fuse_amt)
 
 def unlock_progress(data, root_name):
     if root_name not in data:
