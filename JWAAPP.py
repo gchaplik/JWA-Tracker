@@ -117,6 +117,10 @@ def dna_summary(data, name):
     }
 
 def compute_dart_burden(data, dino_name, parent_of, E):
+    """
+    How many darted DNA units must this node supply toward the root's shortfall.
+    Does NOT apply the one-fuse minimum — callers do that themselves.
+    """
     child_name, slot = parent_of.get(dino_name, (None, None))
     if child_name is None:
         return 0.0
@@ -131,6 +135,21 @@ def compute_dart_burden(data, dino_name, parent_of, E):
         if child_true_burden == 0:
             return 0.0
         return round(child_true_burden * (fuse_amt / E), 2)
+
+def min_one_fuse_burden(data, dino_name, parent_of, raw_burden):
+    """
+    Clamp raw_burden to at least one fuse cost from the immediate parent.
+    You can never do a partial fuse, so the floor is always fuse_amt.
+    If burden is 0 (creature not needed), leave it at 0.
+    """
+    if raw_burden <= 0:
+        return 0.0
+    child_name, slot = parent_of.get(dino_name, (None, None))
+    if child_name is None or child_name not in data:
+        return raw_burden
+    fuse_amt = (data[child_name].get("parent_1_amount", 50) if slot == "parent_1"
+                else data[child_name].get("parent_2_amount", 50))
+    return max(raw_burden, float(fuse_amt))
 
 def unlock_progress(data, root_name):
     if root_name not in data:
@@ -166,12 +185,8 @@ def unlock_progress(data, root_name):
 
 def tree_dna_progress(data, root_name):
     """
-    For each sub-creature, measure curr_dna vs the darted DNA burden it
-    must supply toward unlocking the root. This is what actually matters —
-    not whether the sub-creature itself is unlocked.
-
-    Returns (pct, total_held, total_required, per_node) where per_node is
-    a list of (name, curr_dna, burden, pct).
+    For each sub-creature, measure curr_dna vs their dart burden toward the root.
+    Burden is floored at one fuse cost — you can never do a partial fuse.
     """
     tree = build_tree_list(data, root_name)
     sub  = tree[1:]
@@ -181,18 +196,21 @@ def tree_dna_progress(data, root_name):
 
     parent_of = build_parent_of(data, tree)
 
-    total_held     = 0
-    total_required = 0
+    total_held     = 0.0
+    total_required = 0.0
     per_node       = []
 
     for name in sub:
         if name not in data:
             continue
 
-        curr_dna = data[name]["curr_dna"]
-        burden   = compute_dart_burden(data, name, parent_of, E)
+        curr_dna   = data[name]["curr_dna"]
+        raw_burden = compute_dart_burden(data, name, parent_of, E)
 
-        # Clamp contribution — can't contribute more than needed
+        # ── KEY FIX: floor to one full fuse cost ──────────────────────────
+        burden = min_one_fuse_burden(data, name, parent_of, raw_burden)
+        # ──────────────────────────────────────────────────────────────────
+
         contributed = min(curr_dna, burden)
         node_pct    = min(100.0, (curr_dna / burden * 100)) if burden > 0 else 100.0
 
@@ -305,7 +323,6 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
 }
 .dash-detail { font-size: 0.78rem; opacity: 0.55; margin-top: 0.1rem; padding-left: 1px; }
 
-/* collapsible sub-section */
 .sub-breakdown {
     margin-top: 0.6rem;
     padding-top: 0.5rem;
@@ -337,7 +354,6 @@ details.sub-details[open] summary::after { content: " [hide]"; }
 .sub-row-name { flex: 1; }
 .sub-row-nums { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-/* tree cards */
 .dino-card {
     background: #161b24;
     border: 1px solid #2a2f3a;
@@ -359,7 +375,6 @@ details.sub-details[open] summary::after { content: " [hide]"; }
     padding: 0.3rem 0.6rem; font-size: 0.85rem;
     display: inline-block; margin-top: 0.3rem;
 }
-/* fuse */
 .fuse-panel {
     background: #0f1a14; border: 1px solid #1e8a5e;
     border-radius: 12px; padding: 1.4rem 1.6rem; margin-bottom: 1.2rem;
@@ -520,7 +535,6 @@ if st.session_state.active_page == "dashboard":
                 tree      = build_tree_list(data, name)
                 n_parents = len(tree) - 1
 
-                # ── Sub-creature dart-burden progress ─────────────────────
                 sub_pct, sub_held, sub_required, sub_nodes = tree_dna_progress(data, name)
 
                 sub_section = ""
@@ -529,7 +543,6 @@ if st.session_state.active_page == "dashboard":
                     elif sub_pct >= 40: sub_bar_color = "#f1c40f"
                     else:               sub_bar_color = "#e05555"
 
-                    # Per-node rows (inside <details>)
                     rows_html = ""
                     for node_name, node_curr, node_burden, node_pct in sub_nodes:
                         node_color = RARITY_COLORS.get(
@@ -626,7 +639,8 @@ elif st.session_state.active_page == "tree":
         else:
             child_name, slot = parent_of.get(dino_name, (None, None))
             if child_name and child_name in data:
-                needed = compute_dart_burden(data, dino_name, parent_of, E)
+                raw    = compute_dart_burden(data, dino_name, parent_of, E)
+                needed = min_one_fuse_burden(data, dino_name, parent_of, raw)
                 badge_line = (f"DNA needed for <strong>{child_name}</strong>: "
                               f"<strong>{needed}</strong> darted DNA &nbsp;|&nbsp; Have: {info['curr_dna']}")
             else:
@@ -634,10 +648,12 @@ elif st.session_state.active_page == "tree":
 
         p_info = ""
         if info["p1_name"]:
-            p1b = compute_dart_burden(data, info["p1_name"], parent_of, E)
+            raw = compute_dart_burden(data, info["p1_name"], parent_of, E)
+            p1b = min_one_fuse_burden(data, info["p1_name"], parent_of, raw)
             p_info += f"&nbsp;&nbsp;<strong>{info['p1_name']}</strong> darts needed: <code>{p1b}</code>"
         if info["p2_name"]:
-            p2b = compute_dart_burden(data, info["p2_name"], parent_of, E)
+            raw = compute_dart_burden(data, info["p2_name"], parent_of, E)
+            p2b = min_one_fuse_burden(data, info["p2_name"], parent_of, raw)
             p_info += f"&nbsp;&nbsp;<strong>{info['p2_name']}</strong> darts needed: <code>{p2b}</code>"
 
         card_bg = "#2d1f3d" if (info["p1_name"] and info["p2_name"]) else "#161b24"
