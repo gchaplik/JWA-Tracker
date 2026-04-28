@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import os
 import math
+
 # ── persistence ──────────────────────────────────────────────────────────────
 DATA_FILE = "dinos.json"
 
@@ -116,43 +117,58 @@ def dna_summary(data, name):
         "need_p2_darted": round(need_p2, 2),
     }
 
+def fuse_amt_for_slot(data, child_name, slot):
+    """How much DNA the child consumes from this slot per fuse."""
+    return (data[child_name].get("parent_1_amount", 50) if slot == "parent_1"
+            else data[child_name].get("parent_2_amount", 50))
+
+def ceil_to_fuse(raw, fuse_amt):
+    """Round raw up to the nearest whole multiple of fuse_amt."""
+    if raw <= 0 or fuse_amt <= 0:
+        return 0.0
+    return float(math.ceil(raw / fuse_amt) * fuse_amt)
+
 def compute_dart_burden(data, dino_name, parent_of, E):
     """
-    How many darted DNA units must this node supply toward the root's shortfall.
-    Does NOT apply the one-fuse minimum — callers do that themselves.
+    How many darted DNA units this node still needs to supply toward the root,
+    accounting for what intermediate nodes already hold.
+
+    At each hop we:
+      1. Find the child's full rounded burden.
+      2. Subtract what the child already has (its curr_dna).
+      3. Scale that REMAINING need down to this node via fuse_amt / E.
+      4. Round up to the nearest fuse cost for this node's slot.
     """
     child_name, slot = parent_of.get(dino_name, (None, None))
     if child_name is None:
         return 0.0
-    grandchild_name, child_slot_in_gc = parent_of.get(child_name, (None, None))
-    if grandchild_name is None:
-        child_info = dna_summary(data, child_name)
-        return (child_info["need_p1_darted"] if slot == "parent_1" else child_info["need_p2_darted"])
-    else:
-        child_true_burden = compute_dart_burden(data, child_name, parent_of, E)
-        fuse_amt = (data[child_name].get("parent_1_amount", 50) if slot == "parent_1"
-                    else data[child_name].get("parent_2_amount", 50))
-        if child_true_burden == 0:
-            return 0.0
-        return round(child_true_burden * (fuse_amt / E), 2)
 
-def min_one_fuse_burden(data, dino_name, parent_of, raw_burden):
-    """
-    Round raw_burden UP to the nearest whole fuse cost.
-    e.g. fuse_amt=200, raw_burden=176 → 200
-         fuse_amt=200, raw_burden=201 → 400
-    If burden is 0 (creature not needed), leave it at 0.
-    """
-    if raw_burden <= 0:
-        return 0.0
-    child_name, slot = parent_of.get(dino_name, (None, None))
-    if child_name is None or child_name not in data:
-        return raw_burden
-    fuse_amt = (data[child_name].get("parent_1_amount", 50) if slot == "parent_1"
-                else data[child_name].get("parent_2_amount", 50))
-    if fuse_amt <= 0:
-        return raw_burden
-    return float(math.ceil(raw_burden / fuse_amt) * fuse_amt)
+    amt = fuse_amt_for_slot(data, child_name, slot)
+
+    grandchild_name, _ = parent_of.get(child_name, (None, None))
+
+    if grandchild_name is None:
+        # Child IS the root — use root's own remaining dart need for this slot
+        child_info = dna_summary(data, child_name)
+        raw = (child_info["need_p1_darted"] if slot == "parent_1"
+               else child_info["need_p2_darted"])
+        return ceil_to_fuse(raw, amt)
+    else:
+        # Child is an intermediate node.
+        # Step 1: what is the child's own full rounded burden toward ITS parent?
+        child_raw    = compute_dart_burden(data, child_name, parent_of, E)
+        # child_raw is already rounded up, so this is the true minimum needed.
+
+        # Step 2: how much does the child still lack?
+        child_curr   = data[child_name]["curr_dna"]
+        child_remaining = max(0.0, child_raw - child_curr)
+
+        if child_remaining == 0:
+            return 0.0
+
+        # Step 3: scale remaining need to this node, then round up to fuse cost
+        raw = child_remaining * (amt / E)
+        return ceil_to_fuse(raw, amt)
 
 def unlock_progress(data, root_name):
     if root_name not in data:
@@ -188,8 +204,8 @@ def unlock_progress(data, root_name):
 
 def tree_dna_progress(data, root_name):
     """
-    For each sub-creature, measure curr_dna vs their dart burden toward the root.
-    Burden is floored at one fuse cost — you can never do a partial fuse.
+    For each sub-creature, measure curr_dna vs their remaining dart burden
+    toward the root (already rounded up to nearest fuse cost).
     """
     tree = build_tree_list(data, root_name)
     sub  = tree[1:]
@@ -207,12 +223,8 @@ def tree_dna_progress(data, root_name):
         if name not in data:
             continue
 
-        curr_dna   = data[name]["curr_dna"]
-        raw_burden = compute_dart_burden(data, name, parent_of, E)
-
-        # ── KEY FIX: floor to one full fuse cost ──────────────────────────
-        burden = min_one_fuse_burden(data, name, parent_of, raw_burden)
-        # ──────────────────────────────────────────────────────────────────
+        curr_dna = data[name]["curr_dna"]
+        burden   = compute_dart_burden(data, name, parent_of, E)
 
         contributed = min(curr_dna, burden)
         node_pct    = min(100.0, (curr_dna / burden * 100)) if burden > 0 else 100.0
@@ -551,7 +563,9 @@ if st.session_state.active_page == "dashboard":
                         node_color = RARITY_COLORS.get(
                             data[node_name]["rarity"] if node_name in data else "Common", "#888"
                         )
-                        if node_pct >= 100:
+                        if node_burden == 0:
+                            val_str = f"<span style='opacity:0.4'>not needed</span>"
+                        elif node_pct >= 100:
                             val_str = f"{int(node_curr):,} / {int(node_burden):,} &nbsp;<span style='color:{sub_bar_color}'>done</span>"
                         else:
                             still_needed = max(0, node_burden - node_curr)
@@ -567,7 +581,7 @@ if st.session_state.active_page == "dashboard":
 
                     sub_section = f"""
 <div class="sub-breakdown">
-  <div class="progress-label">Progress to complete &nbsp;
+  <div class="progress-label">Sub-creature darted DNA &nbsp;
     <span style="opacity:0.8">{sub_held:,.0f} / {sub_required:,.0f}</span>
   </div>
   <div class="progress-track-thin">
@@ -642,8 +656,7 @@ elif st.session_state.active_page == "tree":
         else:
             child_name, slot = parent_of.get(dino_name, (None, None))
             if child_name and child_name in data:
-                raw    = compute_dart_burden(data, dino_name, parent_of, E)
-                needed = min_one_fuse_burden(data, dino_name, parent_of, raw)
+                needed = compute_dart_burden(data, dino_name, parent_of, E)
                 badge_line = (f"DNA needed for <strong>{child_name}</strong>: "
                               f"<strong>{needed}</strong> darted DNA &nbsp;|&nbsp; Have: {info['curr_dna']}")
             else:
@@ -651,12 +664,10 @@ elif st.session_state.active_page == "tree":
 
         p_info = ""
         if info["p1_name"]:
-            raw = compute_dart_burden(data, info["p1_name"], parent_of, E)
-            p1b = min_one_fuse_burden(data, info["p1_name"], parent_of, raw)
+            p1b = compute_dart_burden(data, info["p1_name"], parent_of, E)
             p_info += f"&nbsp;&nbsp;<strong>{info['p1_name']}</strong> darts needed: <code>{p1b}</code>"
         if info["p2_name"]:
-            raw = compute_dart_burden(data, info["p2_name"], parent_of, E)
-            p2b = min_one_fuse_burden(data, info["p2_name"], parent_of, raw)
+            p2b = compute_dart_burden(data, info["p2_name"], parent_of, E)
             p_info += f"&nbsp;&nbsp;<strong>{info['p2_name']}</strong> darts needed: <code>{p2b}</code>"
 
         card_bg = "#2d1f3d" if (info["p1_name"] and info["p2_name"]) else "#161b24"
