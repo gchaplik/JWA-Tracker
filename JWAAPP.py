@@ -132,12 +132,11 @@ def unlock_progress(data, root_name):
 
     if info["level"] >= 30:
         return 100.0, "MAX", "Level 30"
-
     if info["unlocked"] and info["total_dna_needed"] == 0:
         return 100.0, "READY", "Fully leveled"
 
-    total_needed  = info["total_dna_needed"]
-    curr          = info["curr_dna"]
+    total_needed = info["total_dna_needed"]
+    curr         = info["curr_dna"]
 
     if total_needed == 0 and curr == 0:
         return 0.0, "LOCKED", "No DNA"
@@ -156,6 +155,41 @@ def unlock_progress(data, root_name):
         detail = f"{int(curr)} / {int(total_required)} DNA"
 
     return pct, status, detail
+
+def tree_dna_progress(data, root_name):
+    """
+    Walk every node in the tree (excluding the root itself) and compute:
+      - total DNA currently held across all sub-creatures
+      - total DNA required (held + still needed) across all sub-creatures
+
+    Returns (pct, held, required, per_node) where per_node is a list of
+    (name, held, needed, pct) for the tooltip breakdown.
+    """
+    tree = build_tree_list(data, root_name)
+    sub  = tree[1:]  # everything except the root
+
+    if not sub:
+        return None, 0, 0, []
+
+    total_held     = 0
+    total_required = 0
+    per_node       = []
+
+    for name in sub:
+        if name not in data:
+            continue
+        info    = dna_summary(data, name)
+        held    = info["curr_dna"]
+        needed  = info["total_dna_needed"]
+        req     = held + needed
+        node_pct = min(100.0, (held / req * 100)) if req > 0 else 100.0
+
+        total_held     += held
+        total_required += req
+        per_node.append((name, held, int(needed), round(node_pct, 1)))
+
+    pct = min(100.0, (total_held / total_required * 100)) if total_required > 0 else 100.0
+    return round(pct, 1), total_held, total_required, per_node
 
 def rename_dino(data, old_name, new_name):
     if old_name == new_name or old_name not in data or not new_name:
@@ -182,12 +216,6 @@ html, body, [class*="css"] {
 }
 h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
 
-.dash-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 1rem;
-    margin-top: 1rem;
-}
 .dash-card {
     background: #161b24;
     border: 1px solid #2a2f3a;
@@ -195,6 +223,7 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
     padding: 1.1rem 1.3rem 1rem;
     position: relative;
     overflow: hidden;
+    margin-bottom: 0.2rem;
 }
 .dash-card .rarity-bar {
     position: absolute; left: 0; top: 0; bottom: 0;
@@ -211,12 +240,20 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
     opacity: 0.6;
     padding-left: 8px;
     margin-top: 0.1rem;
+    margin-bottom: 0.4rem;
 }
 .progress-track {
     background: #0d0f14;
     border-radius: 99px;
     height: 8px;
-    margin: 0.7rem 0 0.4rem;
+    margin: 0.4rem 0 0.25rem;
+    overflow: hidden;
+}
+.progress-track-thin {
+    background: #0d0f14;
+    border-radius: 99px;
+    height: 5px;
+    margin: 0.25rem 0 0.2rem;
     overflow: hidden;
 }
 .progress-fill {
@@ -224,10 +261,24 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
     border-radius: 99px;
     transition: width 0.3s ease;
 }
+.progress-label {
+    font-size: 0.7rem;
+    opacity: 0.5;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin-top: 0.5rem;
+    margin-bottom: 0;
+}
 .dash-pct {
     font-family: 'Bebas Neue', sans-serif;
     font-size: 1.6rem;
     letter-spacing: 1px;
+}
+.dash-sub-pct {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 1rem;
+    letter-spacing: 1px;
+    opacity: 0.8;
 }
 .dash-status {
     font-size: 0.7rem;
@@ -240,7 +291,22 @@ h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
     margin-left: 0.4rem;
     vertical-align: middle;
 }
-.dash-detail { font-size: 0.78rem; opacity: 0.55; margin-top: 0.2rem; padding-left: 1px; }
+.dash-detail  { font-size: 0.78rem; opacity: 0.55; margin-top: 0.1rem; padding-left: 1px; }
+.sub-breakdown {
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid #2a2f3a;
+}
+.sub-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.74rem;
+    opacity: 0.7;
+    margin-bottom: 0.2rem;
+}
+.sub-row-name { flex: 1; }
+.sub-row-val  { text-align: right; font-variant-numeric: tabular-nums; min-width: 80px; }
 
 .dino-card {
     background: #161b24;
@@ -401,11 +467,13 @@ if st.session_state.active_page == "dashboard":
     for row_start in range(0, len(cards), cols_per_row):
         row_cards = cards[row_start : row_start + cols_per_row]
         cols = st.columns(cols_per_row)
+
         for col, (name, pct, status, detail) in zip(cols, row_cards):
             with col:
                 info  = dna_summary(data, name)
                 color = RARITY_COLORS.get(info["rarity"], "#888")
 
+                # Status badge colours
                 if status == "MAX":
                     badge_bg, badge_fg = "#1a3a1a", "#51ff00"
                 elif status == "UNLOCKED":
@@ -415,12 +483,50 @@ if st.session_state.active_page == "dashboard":
                 else:
                     badge_bg, badge_fg = "#2a1a1a", "#ff6b6b"
 
+                # Root progress bar colour
                 if pct >= 75:   bar_color = "#51ff00"
                 elif pct >= 40: bar_color = "#f1c40f"
                 else:           bar_color = "#e05555"
 
                 tree      = build_tree_list(data, name)
                 n_parents = len(tree) - 1
+
+                # ── Sub-creature DNA progress ─────────────────────────────
+                sub_pct, sub_held, sub_required, sub_nodes = tree_dna_progress(data, name)
+
+                if sub_pct is not None:
+                    if sub_pct >= 75:   sub_bar_color = "#51ff00"
+                    elif sub_pct >= 40: sub_bar_color = "#f1c40f"
+                    else:               sub_bar_color = "#e05555"
+
+                    # Per-node breakdown rows
+                    breakdown_rows = ""
+                    for node_name, node_held, node_needed, node_pct in sub_nodes:
+                        node_color = RARITY_COLORS.get(
+                            data[node_name]["rarity"] if node_name in data else "Common", "#888"
+                        )
+                        shortage = node_needed
+                        row_detail = (f"{node_held:,} / {node_held + shortage:,}"
+                                      if shortage > 0 else f"{node_held:,} (done)")
+                        breakdown_rows += f"""
+<div class="sub-row">
+  <span class="sub-row-name" style="color:{node_color}">{node_name}</span>
+  <span class="sub-row-val">{row_detail}</span>
+  <span class="sub-row-val" style="min-width:42px;color:{sub_bar_color}">{node_pct}%</span>
+</div>
+"""
+                    sub_section = f"""
+<div class="sub-breakdown">
+  <div class="progress-label">Sub-creature DNA &nbsp; {sub_held:,} / {sub_required:,}</div>
+  <div class="progress-track-thin">
+    <div class="progress-fill" style="width:{sub_pct:.1f}%;background:{sub_bar_color}"></div>
+  </div>
+  <span class="dash-sub-pct" style="color:{sub_bar_color}">{sub_pct:.1f}%</span>
+  {breakdown_rows}
+</div>
+"""
+                else:
+                    sub_section = ""
 
                 st.markdown(f"""
 <div class="dash-card">
@@ -432,12 +538,14 @@ if st.session_state.active_page == "dashboard":
       &nbsp;·&nbsp; Lv {info['level']}
       {'&nbsp;·&nbsp; ' + str(n_parents) + ' ancestors' if n_parents > 0 else ''}
     </div>
+    <div class="progress-label">Root DNA progress</div>
     <div class="progress-track">
       <div class="progress-fill" style="width:{pct:.1f}%;background:{bar_color}"></div>
     </div>
     <span class="dash-pct" style="color:{bar_color}">{pct:.1f}%</span>
     <span class="dash-status" style="background:{badge_bg};color:{badge_fg}">{status}</span>
     <div class="dash-detail">{detail}</div>
+    {sub_section}
   </div>
 </div>
 """, unsafe_allow_html=True)
