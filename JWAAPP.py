@@ -2,6 +2,13 @@ import streamlit as st
 import json
 import os
 import math
+from datetime import datetime
+
+try:
+    import plotly.graph_objects as go
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
 
 # ── persistence ──────────────────────────────────────────────────────────────
 DATA_FILE = "dinos.json"
@@ -15,6 +22,27 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+def record_fuse(data, dino_name, pack_label, count, actual, expected,
+                p1_name, p1_cost, p2_name, p2_cost, leveled_up, new_level):
+    if "fuse_history" not in data:
+        data["fuse_history"] = []
+    data["fuse_history"].append({
+        "ts":         datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "dino":       dino_name,
+        "pack":       pack_label,
+        "count":      count,
+        "actual":     actual,
+        "expected":   round(expected, 1),
+        "diff":       round(actual - expected, 1),
+        "p1_name":    p1_name,
+        "p1_cost":    p1_cost,
+        "p2_name":    p2_name,
+        "p2_cost":    p2_cost,
+        "leveled_up": leveled_up,
+        "new_level":  new_level,
+    })
+    return data
 
 # ── game data ─────────────────────────────────────────────────────────────────
 dna_prob = {10:0.404,20:0.242,30:0.198,40:0.081,50:0.056,
@@ -52,6 +80,12 @@ RARITY_COLORS = {
     "Unique":    "#51ff00",
     "Apex":      "#c8a951",
 }
+
+# Distinct palette for chart lines (cycles if more creatures than colors)
+CHART_PALETTE = [
+    "#4a90e2","#51ff00","#f1c40f","#ff6b6b","#c8a951",
+    "#a78bfa","#34d399","#fb923c","#f472b6","#22d3ee",
+]
 
 # ── core functions ─────────────────────────────────────────────────────────────
 def cumulative_sum(dna_dict, curr_level, target_level, current_dna):
@@ -200,27 +234,111 @@ def rename_dino(data, old_name, new_name):
         if d.get("parent_2") == old_name: d["parent_2"] = new_name
     return data
 
+# ── chart builder ─────────────────────────────────────────────────────────────
+def build_cumulative_chart(history_by_creature, mode, window):
+    """
+    mode     : "cumulative" (sum) or "per_fuse" (individual values)
+    window   : int (last N fuse events) or None (all time)
+    history_by_creature : dict of { dino_name: [list of fuse records] }
+
+    Returns a plotly Figure.
+    """
+    fig = go.Figure()
+
+    layout_cfg = dict(
+        plot_bgcolor  = "#0d0f14",
+        paper_bgcolor = "#0d0f14",
+        font          = dict(family="DM Sans", color="#e8e4dc", size=12),
+        legend        = dict(bgcolor="#161b24", bordercolor="#2a2f3a",
+                             borderwidth=1, font=dict(size=11)),
+        xaxis = dict(
+            title      = "Fuse event #",
+            gridcolor  = "#1e2530",
+            zerolinecolor = "#2a2f3a",
+            tickfont   = dict(size=10),
+        ),
+        yaxis = dict(
+            title      = "Cumulative DNA" if mode == "cumulative" else "DNA per event",
+            gridcolor  = "#1e2530",
+            zerolinecolor = "#2a2f3a",
+            tickfont   = dict(size=10),
+        ),
+        hovermode  = "x unified",
+        margin     = dict(l=50, r=20, t=30, b=50),
+    )
+
+    color_idx = 0
+    drawn_expected = set()
+
+    for dino_name, records in history_by_creature.items():
+        # Apply window (last N records for this creature)
+        windowed = records[-window:] if window else records
+        if not windowed:
+            continue
+
+        color = CHART_PALETTE[color_idx % len(CHART_PALETTE)]
+        color_idx += 1
+
+        xs       = list(range(1, len(windowed) + 1))
+        actuals  = [r["actual"]   for r in windowed]
+        expecteds= [r["expected"] for r in windowed]
+
+        if mode == "cumulative":
+            cum_actual   = []
+            cum_expected = []
+            run_a = run_e = 0
+            for a, e in zip(actuals, expecteds):
+                run_a += a; run_e += e
+                cum_actual.append(run_a)
+                cum_expected.append(run_e)
+            y_actual   = cum_actual
+            y_expected = cum_expected
+        else:
+            y_actual   = actuals
+            y_expected = expecteds
+
+        # Actual line
+        fig.add_trace(go.Scatter(
+            x=xs, y=y_actual,
+            name=f"{dino_name} — actual",
+            mode="lines+markers",
+            line=dict(color=color, width=2),
+            marker=dict(size=5, color=color),
+            hovertemplate="%{y:,.0f}<extra>" + dino_name + " actual</extra>",
+        ))
+
+        # Expected line — dashed, same colour but lighter
+        # Only draw one global expected line if single creature, else per-creature
+        exp_key = dino_name
+        if exp_key not in drawn_expected:
+            drawn_expected.add(exp_key)
+            fig.add_trace(go.Scatter(
+                x=xs, y=y_expected,
+                name=f"{dino_name} — expected",
+                mode="lines",
+                line=dict(color=color, width=1.5, dash="dot"),
+                opacity=0.45,
+                hovertemplate="%{y:,.0f}<extra>" + dino_name + " expected</extra>",
+            ))
+
+    fig.update_layout(**layout_cfg)
+    return fig
+
 # ── tree renderer ─────────────────────────────────────────────────────────────
-LINE = "#3a4555"
-LINE_H = 32  # px of vertical connector segments
+LINE   = "#3a4555"
+LINE_H = 32
 
 def render_tree_html(data, node_name, parent_of, E, is_root=False):
-    """
-    Recursively build a top-down flexbox tree.
-    Root at top, its ingredients (parents) fan out below it.
-    """
     if node_name not in data:
         return ""
-
-    info     = dna_summary(data, node_name)
-    color    = RARITY_COLORS.get(info["rarity"], "#888")
-    d        = data[node_name]
-    p1       = d.get("parent_1")
-    p2       = d.get("parent_2")
+    info      = dna_summary(data, node_name)
+    color     = RARITY_COLORS.get(info["rarity"], "#888")
+    d         = data[node_name]
+    p1        = d.get("parent_1")
+    p2        = d.get("parent_2")
     is_hybrid = bool(p1 and p2)
-    card_bg  = "#2d1f3d" if is_hybrid else "#161b24"
+    card_bg   = "#2d1f3d" if is_hybrid else "#161b24"
 
-    # ── sub-text for card ────────────────────────────────────────────────────
     if is_root:
         if info["levels_needed"] > 0:
             sub = f"Need {info['levels_needed']} more levels to unlock"
@@ -233,7 +351,7 @@ def render_tree_html(data, node_name, parent_of, E, is_root=False):
         needed = compute_dart_burden(data, node_name, parent_of, E)
         have   = info["curr_dna"]
         if needed == 0:
-            sub = f'<span style="color:#51ff00">Satisfied</span>'
+            sub = '<span style="color:#51ff00">Satisfied</span>'
         else:
             pct_have = have / needed
             hcol = "#51ff00" if pct_have >= 1.0 else "#f1c40f" if pct_have >= 0.5 else "#ff6b6b"
@@ -242,36 +360,28 @@ def render_tree_html(data, node_name, parent_of, E, is_root=False):
     uc = "#51ff00" if info["unlocked"] else "#555"
     ut = "Unlocked" if info["unlocked"] else "Locked"
 
-    # ── build children ────────────────────────────────────────────────────────
     children = []
-    if p1 and p1 in data:
-        children.append(render_tree_html(data, p1, parent_of, E, False))
-    if p2 and p2 in data:
-        children.append(render_tree_html(data, p2, parent_of, E, False))
-
+    if p1 and p1 in data: children.append(render_tree_html(data, p1, parent_of, E, False))
+    if p2 and p2 in data: children.append(render_tree_html(data, p2, parent_of, E, False))
     has_ch = len(children) > 0
 
-    # card — if it has children, we add a downward stub via ::after in CSS
     card_html = f"""<div class="t-card {'t-card-parent' if has_ch else ''}"
-  style="background:{card_bg};border-top:3px solid {color};border-color:{color}">
-  <div class="t-name" style="color:{color}">{node_name}</div>
-  <div class="t-rar"  style="color:{color}">{info['rarity']}</div>
+  style="background:{card_bg};border-top:3px solid {color}">
+  <div class="t-name"  style="color:{color}">{node_name}</div>
+  <div class="t-rar"   style="color:{color}">{info['rarity']}</div>
   <div class="t-stats">Lv {info['level']} &nbsp;·&nbsp; {info['curr_dna']:,} DNA</div>
   <div class="t-sub">{sub}</div>
-  <div class="t-lock" style="color:{uc}">{ut}</div>
+  <div class="t-lock"  style="color:{uc}">{ut}</div>
 </div>"""
 
     if not has_ch:
         return f'<div class="t-node">{card_html}</div>'
 
-    # wrap each child in a .t-cwrap for the connector CSS
     wraps = "".join(f'<div class="t-cwrap">{c}</div>' for c in children)
-
     return f"""<div class="t-node">
 {card_html}
 <div class="t-children">{wraps}</div>
 </div>"""
-
 
 # ── page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="JWA Tracker", page_icon="", layout="wide")
@@ -279,127 +389,31 @@ st.set_page_config(page_title="JWA Tracker", page_icon="", layout="wide")
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;600&display=swap');
+html, body, [class*="css"] {{ font-family:'DM Sans',sans-serif; background:#0d0f14; color:#e8e4dc; }}
+h1, h2, h3 {{ font-family:'Bebas Neue',sans-serif; letter-spacing:2px; }}
 
-html, body, [class*="css"] {{
-    font-family: 'DM Sans', sans-serif;
-    background: #0d0f14;
-    color: #e8e4dc;
-}}
-h1, h2, h3 {{ font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }}
-
-/* ══════════════════════════════════════════════════
-   TREE DIAGRAM
-══════════════════════════════════════════════════ */
-.t-scroll {{
-    overflow-x: auto;
-    overflow-y: visible;
-    padding: 2rem 2rem 3rem;
-}}
-
-/* Each node: stacked vertically, centred */
-.t-node {{
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    position: relative;
-}}
-
-/* ── card ── */
-.t-card {{
-    border: 1px solid #2a2f3a;
-    border-radius: 10px;
-    padding: 0.7rem 1rem 0.65rem;
-    min-width: 150px;
-    max-width: 200px;
-    text-align: center;
-    position: relative;
-    background: #161b24;
-    flex-shrink: 0;
-}}
+/* tree */
+.t-scroll {{ overflow-x:auto; overflow-y:visible; padding:2rem 2rem 3rem; }}
+.t-node {{ display:inline-flex; flex-direction:column; align-items:center; position:relative; }}
+.t-card {{ border:1px solid #2a2f3a; border-radius:10px; padding:.7rem 1rem .65rem; min-width:150px; max-width:200px; text-align:center; position:relative; background:#161b24; flex-shrink:0; }}
 .t-name  {{ font-family:'Bebas Neue',sans-serif; font-size:1.05rem; letter-spacing:1.2px; line-height:1.1; }}
-.t-rar   {{ font-size:0.6rem; text-transform:uppercase; letter-spacing:1.4px; opacity:.65; margin-top:.05rem; }}
-.t-stats {{ font-size:0.72rem; opacity:.55; margin-top:.3rem; }}
-.t-sub   {{ font-size:0.72rem; margin-top:.3rem; line-height:1.45; min-height:1.8em; }}
-.t-lock  {{ font-size:0.62rem; margin-top:.3rem; letter-spacing:.5px; }}
+.t-rar   {{ font-size:.6rem; text-transform:uppercase; letter-spacing:1.4px; opacity:.65; margin-top:.05rem; }}
+.t-stats {{ font-size:.72rem; opacity:.55; margin-top:.3rem; }}
+.t-sub   {{ font-size:.72rem; margin-top:.3rem; line-height:1.45; min-height:1.8em; }}
+.t-lock  {{ font-size:.62rem; margin-top:.3rem; letter-spacing:.5px; }}
+.t-card-parent::after {{ content:''; position:absolute; bottom:-{LINE_H}px; left:50%; transform:translateX(-50%); width:2px; height:{LINE_H}px; background:{LINE}; z-index:1; }}
+.t-children {{ display:flex; flex-direction:row; align-items:flex-start; justify-content:center; padding-top:{LINE_H}px; position:relative; }}
+.t-cwrap {{ display:inline-flex; flex-direction:column; align-items:center; padding:0 16px; position:relative; }}
+.t-cwrap::before {{ content:''; position:absolute; top:0; left:0; right:0; height:2px; background:{LINE}; }}
+.t-cwrap:first-child::before {{ left:50%; }}
+.t-cwrap:last-child::before  {{ right:50%; }}
+.t-cwrap:only-child::before  {{ display:none; }}
+.t-cwrap::after {{ content:''; position:absolute; top:0; left:50%; transform:translateX(-50%); width:2px; height:{LINE_H}px; background:{LINE}; }}
+.t-cwrap > .t-node {{ margin-top:{LINE_H}px; }}
 
-/* Vertical stub DOWN from a card that has children */
-.t-card-parent::after {{
-    content: '';
-    position: absolute;
-    bottom: -{LINE_H}px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 2px;
-    height: {LINE_H}px;
-    background: {LINE};
-    z-index: 1;
-}}
-
-/* ── children row ── */
-.t-children {{
-    display: flex;
-    flex-direction: row;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: {LINE_H}px;   /* room for the stub above */
-    position: relative;
-}}
-
-/* Each child wrapper */
-.t-cwrap {{
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 0 16px;
-    position: relative;
-}}
-
-/* Horizontal bar across top of children area */
-.t-cwrap::before {{
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: {LINE};
-}}
-/* left-most: bar only on right half */
-.t-cwrap:first-child::before {{ left: 50%; }}
-/* right-most: bar only on left half */
-.t-cwrap:last-child::before  {{ right: 50%; }}
-/* single child: no horizontal bar at all */
-.t-cwrap:only-child::before  {{ display: none; }}
-
-/* Vertical stub DOWN from horizontal bar to child card */
-.t-cwrap::after {{
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 2px;
-    height: {LINE_H}px;
-    background: {LINE};
-}}
-
-/* Push the child node down by LINE_H to clear the stub */
-.t-cwrap > .t-node {{
-    margin-top: {LINE_H}px;
-}}
-
-/* ══════════════════════════════════════════════════
-   DASHBOARD CARDS
-══════════════════════════════════════════════════ */
-.dash-card {{
-    background: #161b24; border: 1px solid #2a2f3a;
-    border-radius: 12px; padding: 1.1rem 1.3rem 1rem;
-    position: relative; overflow: hidden; margin-bottom: .2rem;
-}}
-.dash-card .rarity-bar {{
-    position: absolute; left:0; top:0; bottom:0;
-    width:4px; border-radius:12px 0 0 12px;
-}}
+/* dashboard */
+.dash-card {{ background:#161b24; border:1px solid #2a2f3a; border-radius:12px; padding:1.1rem 1.3rem 1rem; position:relative; overflow:hidden; margin-bottom:.2rem; }}
+.dash-card .rarity-bar {{ position:absolute; left:0; top:0; bottom:0; width:4px; border-radius:12px 0 0 12px; }}
 .dash-card-name {{ font-family:'Bebas Neue',sans-serif; font-size:1.3rem; letter-spacing:1.5px; padding-left:8px; }}
 .dash-card-meta {{ font-size:.78rem; opacity:.6; padding-left:8px; margin-top:.1rem; margin-bottom:.4rem; }}
 .progress-track {{ background:#0d0f14; border-radius:99px; height:8px; margin:.4rem 0 .25rem; overflow:hidden; }}
@@ -419,14 +433,42 @@ details.sub-details[open] summary::after {{ content:" [hide]"; }}
 .sub-row-name {{ flex:1; }}
 .sub-row-nums {{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }}
 
-/* ══════════════════════════════════════════════════
-   FUSE
-══════════════════════════════════════════════════ */
+/* fuse */
 .fuse-panel {{ background:#0f1a14; border:1px solid #1e8a5e; border-radius:12px; padding:1.4rem 1.6rem; margin-bottom:1.2rem; }}
 .fuse-result-good {{ color:#51ff00; font-weight:700; }}
 .fuse-result-avg  {{ color:#f1c40f; font-weight:700; }}
 .fuse-result-bad  {{ color:#ff6b6b; font-weight:700; }}
 .cost-pill {{ display:inline-block; background:#1e2530; border-radius:20px; padding:.2rem .75rem; font-size:.82rem; margin:.2rem .2rem 0 0; }}
+
+/* history */
+.hist-row {{
+    display:grid;
+    grid-template-columns:90px 80px 1fr 70px 70px 70px 90px;
+    gap:0 .6rem; align-items:center;
+    padding:.45rem .7rem; border-radius:7px;
+    font-size:.78rem; margin-bottom:.2rem;
+    background:#161b24; border:1px solid #1e2530;
+}}
+.hist-header {{
+    font-size:.65rem; text-transform:uppercase; letter-spacing:.8px; opacity:.4;
+    padding:.2rem .7rem .3rem;
+    display:grid;
+    grid-template-columns:90px 80px 1fr 70px 70px 70px 90px;
+    gap:0 .6rem;
+}}
+.hist-good {{ color:#51ff00; }}
+.hist-bad  {{ color:#ff6b6b; }}
+.hist-avg  {{ color:#f1c40f; }}
+.hist-summary {{
+    background:#0d1a0f; border:1px solid #1e3a1e;
+    border-radius:10px; padding:.9rem 1.2rem;
+    display:grid; grid-template-columns:repeat(4,1fr);
+    gap:.5rem; margin-bottom:1rem; font-size:.82rem;
+}}
+.hist-summary-item {{ text-align:center; }}
+.hist-summary-val {{ font-family:'Bebas Neue',sans-serif; font-size:1.4rem; letter-spacing:1px; }}
+.hist-summary-lbl {{ font-size:.65rem; opacity:.5; text-transform:uppercase; letter-spacing:.7px; }}
+
 .stButton>button {{ background:#1e8a5e; color:white; border:none; border-radius:6px; font-family:'DM Sans',sans-serif; font-weight:600; }}
 .stButton>button:hover {{ background:#25a870; }}
 </style>
@@ -446,7 +488,7 @@ with st.sidebar:
     st.markdown("# JWA Tracker")
     st.markdown("---")
     st.markdown("### Add / Update Dinosaur")
-    all_names = list(data.keys())
+    all_names = [k for k in data.keys() if k != "fuse_history"]
 
     with st.form(f"add_dino_{st.session_state.form_key}"):
         name     = st.text_input("Name", placeholder="e.g. Indoraptor")
@@ -504,7 +546,7 @@ with st.sidebar:
 # ── main ───────────────────────────────────────────────────────────────────────
 st.markdown("# Jurassic World Alive — DNA Tracker")
 
-nav_cols = st.columns([1, 1, 1, 5])
+nav_cols = st.columns([1, 1, 1, 1, 4])
 with nav_cols[0]:
     if st.button("Dashboard", use_container_width=True,
                  type="primary" if st.session_state.active_page == "dashboard" else "secondary"):
@@ -517,18 +559,23 @@ with nav_cols[2]:
     if st.button("Fuse", use_container_width=True,
                  type="primary" if st.session_state.active_page == "fuse" else "secondary"):
         st.session_state.active_page = "fuse"; st.rerun()
+with nav_cols[3]:
+    if st.button("History", use_container_width=True,
+                 type="primary" if st.session_state.active_page == "history" else "secondary"):
+        st.session_state.active_page = "history"; st.rerun()
 
 st.markdown("---")
 
-if not data:
+if not data or all(k == "fuse_history" for k in data.keys()):
     st.info("No dinosaurs yet. Add one in the sidebar to get started.")
     st.stop()
 
 top_level = [n for n, d in data.items()
-             if not any(d2.get("parent_1") == n or d2.get("parent_2") == n
-                        for d2 in data.values())]
+             if n != "fuse_history" and
+             not any(d2.get("parent_1") == n or d2.get("parent_2") == n
+                     for k2, d2 in data.items() if k2 != "fuse_history")]
 if not top_level:
-    top_level = list(data.keys())
+    top_level = [k for k in data.keys() if k != "fuse_history"]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: DASHBOARD
@@ -586,7 +633,6 @@ if st.session_state.active_page == "dashboard":
     {rows_html}
   </details>
 </div>"""
-
                 st.markdown(f"""<div class="dash-card">
   <div class="rarity-bar" style="background:{color}"></div>
   <div style="padding-left:8px">
@@ -603,17 +649,15 @@ if st.session_state.active_page == "dashboard":
     {sub_section}
   </div>
 </div>""", unsafe_allow_html=True)
-
                 if st.button(f"View {name}", key=f"dash_btn_{name}", use_container_width=True):
                     st.session_state.active_page = "tree"
                     st.session_state.tree_animal = name
                     st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE: EVOLUTION TREE
+# PAGE: TREE
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_page == "tree":
-
     default_idx = 0
     if st.session_state.tree_animal and st.session_state.tree_animal in top_level:
         default_idx = top_level.index(st.session_state.tree_animal)
@@ -627,8 +671,6 @@ elif st.session_state.active_page == "tree":
     parent_of = build_parent_of(data, tree)
 
     st.markdown(f"## {selected} — Evolution Tree")
-
-    # ── render proper tree diagram ────────────────────────────────────────────
     tree_html = render_tree_html(data, selected, parent_of, E, is_root=True)
     st.markdown(
         f'<div class="t-scroll"><div style="display:inline-flex;justify-content:center;width:100%">'
@@ -636,7 +678,6 @@ elif st.session_state.active_page == "tree":
         unsafe_allow_html=True
     )
 
-    # ── raw data editor ───────────────────────────────────────────────────────
     with st.expander("Edit raw data"):
         st.caption("Editing the Name column will rename the dinosaur and update all parent references automatically.")
         edit_rows = []
@@ -704,12 +745,11 @@ elif st.session_state.active_page == "tree":
 # ══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.active_page == "fuse":
     st.markdown("## Fuse DNA")
-    st.markdown("Select a hybrid, choose your fuse pack, record actual DNA received — parents are deducted automatically.")
-
-    fuseable = [n for n, d in data.items() if d.get("parent_1") and d.get("parent_2")]
+    fuseable = [n for n, d in data.items()
+                if n != "fuse_history" and d.get("parent_1") and d.get("parent_2")]
 
     if not fuseable:
-        st.warning("No hybrid dinosaurs found. Add a dinosaur with both parents set to use Fuse.")
+        st.warning("No hybrid dinosaurs found.")
     else:
         st.markdown('<div class="fuse-panel">', unsafe_allow_html=True)
 
@@ -759,8 +799,8 @@ elif st.session_state.active_page == "fuse":
         st.markdown("#### Record Actual Fuse Result")
 
         with st.form("fuse_form"):
-            actual_dna = st.number_input("Actual DNA received", min_value=0, value=int(expected), step=10,
-                                         help=f"Total DNA from all {count} fuse(s).")
+            actual_dna = st.number_input("Actual DNA received", min_value=0,
+                                         value=int(expected), step=10)
             diff = actual_dna - expected
             if count > 1:
                 per_avg = round(actual_dna / count, 1)
@@ -790,6 +830,9 @@ elif st.session_state.active_page == "fuse":
                     curr_dna -= cost; curr_level += 1; leveled_up += 1
                 data[fuse_dino_name]["level"]    = curr_level
                 data[fuse_dino_name]["curr_dna"] = curr_dna
+                data = record_fuse(data, fuse_dino_name, pack["label"], count,
+                                   actual_dna, expected, p1_name, total_p1,
+                                   p2_name, total_p2, leveled_up, curr_level)
                 save_data(data)
                 st.session_state.data = data
                 st.session_state.fuse_result = {
@@ -809,8 +852,8 @@ elif st.session_state.active_page == "fuse":
             diff_str     = f"+{diff:.0f}" if diff >= 0 else f"{diff:.0f}"
             level_line   = (f"<br/><strong>Leveled up {r['leveled_up']}x to Lv {r['new_level']}</strong> "
                             f"(remaining DNA: {r['new_dna']})" if r["leveled_up"] > 0 else "")
-            st.markdown(f"""<div style="background:{banner_color};border-radius:10px;padding:1rem 1.4rem;
-                            margin-top:1rem;border:1px solid #2a3a2a">
+            st.markdown(f"""<div style="background:{banner_color};border-radius:10px;
+                            padding:1rem 1.4rem;margin-top:1rem;border:1px solid #2a3a2a">
   <strong>Fuse applied.</strong><br/>
   <strong>{r['dino']}</strong> +{r['actual']} DNA
   <span style="opacity:0.7">({diff_str} vs expected {r['expected']:.0f})</span><br/>
@@ -826,3 +869,137 @@ elif st.session_state.active_page == "fuse":
         ref_cols = st.columns(len(FUSE_PACKS))
         for col, (pk, pv) in zip(ref_cols, FUSE_PACKS.items()):
             col.metric(pv["label"], f"{round(E * pv['count'], 1)} DNA", f"{pv['count']}x fuse")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: HISTORY
+# ══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.active_page == "history":
+    st.markdown("## Fuse History")
+
+    history = data.get("fuse_history", [])
+
+    if not history:
+        st.info("No fuse history yet. Apply some fuses and they will appear here.")
+        st.stop()
+
+    all_fused = sorted(set(h["dino"] for h in history))
+
+    # ── controls row ──────────────────────────────────────────────────────────
+    ctrl1, ctrl2, ctrl3 = st.columns([3, 2, 2])
+
+    with ctrl1:
+        selected_creatures = st.multiselect(
+            "Creatures",
+            options=all_fused,
+            default=all_fused[:1] if all_fused else [],
+            help="Select one or more creatures to compare"
+        )
+
+    with ctrl2:
+        window_label = st.selectbox(
+            "Window",
+            options=["Last 10", "Last 20", "Last 30", "All time"],
+            index=3,
+        )
+        window_map = {"Last 10": 10, "Last 20": 20, "Last 30": 30, "All time": None}
+        window = window_map[window_label]
+
+    with ctrl3:
+        chart_mode = st.selectbox(
+            "View",
+            options=["Cumulative sum", "Per fuse event"],
+        )
+        mode = "cumulative" if chart_mode == "Cumulative sum" else "per_fuse"
+
+    if not selected_creatures:
+        st.info("Select at least one creature above to see the chart.")
+    elif not HAS_PLOTLY:
+        st.warning("Install plotly to see the chart: `pip install plotly`")
+    else:
+        # Build per-creature history dict
+        history_by_creature = {}
+        for dino in selected_creatures:
+            records = [h for h in history if h["dino"] == dino]
+            history_by_creature[dino] = records
+
+        fig = build_cumulative_chart(history_by_creature, mode, window)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("---")
+
+    # ── summary stats (all selected creatures combined) ───────────────────────
+    filtered_all = [h for h in history
+                    if not selected_creatures or h["dino"] in selected_creatures]
+    filtered_all = filtered_all[-window:] if window else filtered_all
+
+    if filtered_all:
+        total_fuses    = sum(h["count"]    for h in filtered_all)
+        total_actual   = sum(h["actual"]   for h in filtered_all)
+        total_expected = sum(h["expected"] for h in filtered_all)
+        total_diff     = total_actual - total_expected
+        avg_per_fuse   = total_actual / total_fuses if total_fuses else 0
+        diff_color     = "#51ff00" if total_diff >= 0 else "#ff6b6b"
+        diff_str       = f"+{total_diff:.0f}" if total_diff >= 0 else f"{total_diff:.0f}"
+
+        st.markdown(f"""<div class="hist-summary">
+  <div class="hist-summary-item">
+    <div class="hist-summary-val">{total_fuses:,}</div>
+    <div class="hist-summary-lbl">Total fuses</div>
+  </div>
+  <div class="hist-summary-item">
+    <div class="hist-summary-val">{int(total_actual):,}</div>
+    <div class="hist-summary-lbl">Total DNA</div>
+  </div>
+  <div class="hist-summary-item">
+    <div class="hist-summary-val" style="color:{diff_color}">{diff_str}</div>
+    <div class="hist-summary-lbl">vs Expected</div>
+  </div>
+  <div class="hist-summary-item">
+    <div class="hist-summary-val">{avg_per_fuse:.1f}</div>
+    <div class="hist-summary-lbl">Avg DNA / fuse</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    # ── table ─────────────────────────────────────────────────────────────────
+    st.markdown("#### Log")
+    filter_dino = st.selectbox("Filter table by creature",
+                               ["All"] + all_fused, key="hist_table_filter")
+    table_rows = [h for h in history if filter_dino == "All" or h["dino"] == filter_dino]
+    table_rows = list(reversed(table_rows))
+
+    st.markdown("""<div class="hist-header">
+  <span>Date</span><span>Creature</span><span>Pack</span>
+  <span>Got</span><span>Expected</span><span>Diff</span><span>Level after</span>
+</div>""", unsafe_allow_html=True)
+
+    for h in table_rows:
+        diff     = h["diff"]
+        diff_cls = "hist-good" if diff > 0 else "hist-bad" if diff < 0 else "hist-avg"
+        diff_disp= f"+{diff:.0f}" if diff > 0 else f"{diff:.0f}"
+        lvl_str  = (f"Lv {h['new_level']} <span style='color:#51ff00;font-size:.65rem'>(+{h['leveled_up']})</span>"
+                    if h["leveled_up"] > 0 else f"Lv {h['new_level']}")
+        dino_color = RARITY_COLORS.get(
+            data[h["dino"]]["rarity"] if h["dino"] in data else "Common", "#aaa"
+        )
+        st.markdown(f"""<div class="hist-row">
+  <span style="opacity:.5">{h['ts']}</span>
+  <span style="color:{dino_color};font-weight:600">{h['dino']}</span>
+  <span style="opacity:.7">{h['pack']}</span>
+  <span><strong>{h['actual']}</strong></span>
+  <span style="opacity:.5">{h['expected']:.0f}</span>
+  <span class="{diff_cls}">{diff_disp}</span>
+  <span>{lvl_str}</span>
+</div>""", unsafe_allow_html=True)
+
+    # ── clear ─────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("Danger zone"):
+        target_clear = st.selectbox("Clear history for", ["All"] + all_fused, key="clear_sel")
+        if st.button("Clear selected history"):
+            if target_clear == "All":
+                data["fuse_history"] = []
+            else:
+                data["fuse_history"] = [h for h in history if h["dino"] != target_clear]
+            save_data(data)
+            st.session_state.data = data
+            st.rerun()
