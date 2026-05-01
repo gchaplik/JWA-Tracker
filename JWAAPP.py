@@ -81,7 +81,6 @@ RARITY_COLORS = {
     "Apex":      "#c8a951",
 }
 
-# Distinct palette for chart lines (cycles if more creatures than colors)
 CHART_PALETTE = [
     "#4a90e2","#51ff00","#f1c40f","#ff6b6b","#c8a951",
     "#a78bfa","#34d399","#fb923c","#f472b6","#22d3ee",
@@ -158,23 +157,61 @@ def ceil_to_fuse(raw, fuse_amt):
         return 0.0
     return float(math.ceil(raw / fuse_amt) * fuse_amt)
 
+def leveling_cost_gross(data, name, child_rarity):
+    """
+    Gross DNA this creature needs to level up to the minimum level required
+    to fuse into a hybrid of child_rarity — WITHOUT subtracting curr_dna,
+    so the caller can offset leveling + fusing needs from the same DNA pool.
+
+    The threshold is driven by the CHILD HYBRID's rarity, not this
+    creature's own rarity.  e.g. a Common ingredient fusing into a Unique
+    needs to be level 20; one fusing into an Epic only needs level 10.
+    """
+    d_info    = data[name]
+    rarity    = d_info["rarity"]
+    level     = d_info["level"]
+    unlocked  = d_info["unlocked"]
+    dna_table = rarity_map.get(rarity, {})
+
+    req_level  = rarity_unlock_levels.get(child_rarity, 0)
+    lvl_needed = max(0, req_level - level)
+    if lvl_needed == 0:
+        return 0
+    target = level + lvl_needed
+    adj    = level if unlocked else level - 1
+    return max(0, sum(dna_table.get(k, 0) for k in range(adj + 1, target + 1)))
+
 def compute_dart_burden(data, dino_name, parent_of, E):
+    """
+    Returns the TOTAL DNA burden for this creature (gross, before subtracting curr_dna):
+      = leveling cost to reach the level the child hybrid requires
+      + fuse DNA contribution up the chain.
+
+    Level requirement is looked up from the CHILD hybrid's rarity so that,
+    e.g., a Common ingredient fusing into a Unique must be level 20.
+    """
     child_name, slot = parent_of.get(dino_name, (None, None))
     if child_name is None:
         return 0.0
     amt = fuse_amt_for_slot(data, child_name, slot)
+
+    # Level requirement is set by what the child hybrid demands of its ingredients
+    child_rarity = data[child_name]["rarity"]
+    own_leveling = leveling_cost_gross(data, dino_name, child_rarity)
+
     grandchild_name, _ = parent_of.get(child_name, (None, None))
     if grandchild_name is None:
+        # child_name is the root; derive fuse need from its dna_summary
         child_info = dna_summary(data, child_name)
-        raw = (child_info["need_p1_darted"] if slot == "parent_1" else child_info["need_p2_darted"])
-        return ceil_to_fuse(raw, amt)
+        raw_fuse = (child_info["need_p1_darted"] if slot == "parent_1" else child_info["need_p2_darted"])
+        return ceil_to_fuse(raw_fuse + own_leveling, amt)
     else:
+        # child_raw already accounts for child's own leveling + child's fuse contribution
         child_raw       = compute_dart_burden(data, child_name, parent_of, E)
         child_curr      = data[child_name]["curr_dna"]
         child_remaining = max(0.0, child_raw - child_curr)
-        if child_remaining == 0:
-            return 0.0
-        return ceil_to_fuse(child_remaining * (amt / E), amt)
+        fuse_part = ceil_to_fuse(child_remaining * (amt / E), amt) if child_remaining > 0 else 0.0
+        return fuse_part + own_leveling
 
 def unlock_progress(data, root_name):
     if root_name not in data:
@@ -236,15 +273,7 @@ def rename_dino(data, old_name, new_name):
 
 # ── chart builder ─────────────────────────────────────────────────────────────
 def build_cumulative_chart(history_by_creature, mode, window):
-    """
-    mode     : "cumulative" (sum) or "per_fuse" (individual values)
-    window   : int (last N fuse events) or None (all time)
-    history_by_creature : dict of { dino_name: [list of fuse records] }
-
-    Returns a plotly Figure.
-    """
     fig = go.Figure()
-
     layout_cfg = dict(
         plot_bgcolor  = "#0d0f14",
         paper_bgcolor = "#0d0f14",
@@ -266,23 +295,17 @@ def build_cumulative_chart(history_by_creature, mode, window):
         hovermode  = "x unified",
         margin     = dict(l=50, r=20, t=30, b=50),
     )
-
     color_idx = 0
     drawn_expected = set()
-
     for dino_name, records in history_by_creature.items():
-        # Apply window (last N records for this creature)
         windowed = records[-window:] if window else records
         if not windowed:
             continue
-
         color = CHART_PALETTE[color_idx % len(CHART_PALETTE)]
         color_idx += 1
-
         xs       = list(range(1, len(windowed) + 1))
         actuals  = [r["actual"]   for r in windowed]
         expecteds= [r["expected"] for r in windowed]
-
         if mode == "cumulative":
             cum_actual   = []
             cum_expected = []
@@ -296,8 +319,6 @@ def build_cumulative_chart(history_by_creature, mode, window):
         else:
             y_actual   = actuals
             y_expected = expecteds
-
-        # Actual line
         fig.add_trace(go.Scatter(
             x=xs, y=y_actual,
             name=f"{dino_name} — actual",
@@ -306,9 +327,6 @@ def build_cumulative_chart(history_by_creature, mode, window):
             marker=dict(size=5, color=color),
             hovertemplate="%{y:,.0f}<extra>" + dino_name + " actual</extra>",
         ))
-
-        # Expected line — dashed, same colour but lighter
-        # Only draw one global expected line if single creature, else per-creature
         exp_key = dino_name
         if exp_key not in drawn_expected:
             drawn_expected.add(exp_key)
@@ -320,7 +338,6 @@ def build_cumulative_chart(history_by_creature, mode, window):
                 opacity=0.45,
                 hovertemplate="%{y:,.0f}<extra>" + dino_name + " expected</extra>",
             ))
-
     fig.update_layout(**layout_cfg)
     return fig
 
@@ -606,6 +623,8 @@ if st.session_state.active_page == "dashboard":
                 tree      = build_tree_list(data, name)
                 n_parents = len(tree) - 1
                 sub_pct, sub_held, sub_required, sub_nodes = tree_dna_progress(data, name)
+
+                # ── build sub-section HTML (no newlines to avoid markdown parse breaks) ──
                 sub_section = ""
                 if sub_pct is not None:
                     sub_bar_color = "#51ff00" if sub_pct >= 75 else "#f1c40f" if sub_pct >= 40 else "#e05555"
@@ -619,36 +638,46 @@ if st.session_state.active_page == "dashboard":
                         else:
                             still = max(0, node_burden - node_curr)
                             val_str = f"{int(node_curr):,} / {int(node_burden):,} &nbsp;<span style='opacity:0.5'>need {int(still):,}</span>"
-                        rows_html += f"""<div class="sub-row">
-  <span class="sub-row-name" style="color:{node_color}">{node_name}</span>
-  <span class="sub-row-nums">{val_str}&nbsp;
-    <span style="color:{sub_bar_color};min-width:40px;display:inline-block;text-align:right">{node_pct:.0f}%</span>
-  </span>
-</div>"""
-                    sub_section = f"""<div class="sub-breakdown">
-  <div class="progress-label">Sub-creature darted DNA &nbsp;<span style="opacity:.8">{sub_held:,.0f} / {sub_required:,.0f}</span></div>
-  <div class="progress-track-thin"><div class="progress-fill" style="width:{sub_pct:.1f}%;background:{sub_bar_color}"></div></div>
-  <details class="sub-details">
-    <summary><span class="dash-sub-pct" style="color:{sub_bar_color}">{sub_pct:.1f}%</span></summary>
-    {rows_html}
-  </details>
-</div>"""
-                st.markdown(f"""<div class="dash-card">
-  <div class="rarity-bar" style="background:{color}"></div>
-  <div style="padding-left:8px">
-    <div class="dash-card-name">{name}</div>
-    <div class="dash-card-meta">
-      <span style="color:{color}">{info['rarity']}</span> &nbsp;·&nbsp; Lv {info['level']}
-      {'&nbsp;·&nbsp; ' + str(n_parents) + ' ancestors' if n_parents > 0 else ''}
-    </div>
-    <div class="progress-label">Root DNA</div>
-    <div class="progress-track"><div class="progress-fill" style="width:{pct:.1f}%;background:{bar_color}"></div></div>
-    <span class="dash-pct" style="color:{bar_color}">{pct:.1f}%</span>
-    <span class="dash-status" style="background:{badge_bg};color:{badge_fg}">{status}</span>
-    <div class="dash-detail">{detail}</div>
-    {sub_section}
-  </div>
-</div>""", unsafe_allow_html=True)
+                        rows_html += (
+                            f'<div class="sub-row">'
+                            f'<span class="sub-row-name" style="color:{node_color}">{node_name}</span>'
+                            f'<span class="sub-row-nums">{val_str}&nbsp;'
+                            f'<span style="color:{sub_bar_color};min-width:40px;display:inline-block;text-align:right">{node_pct:.0f}%</span>'
+                            f'</span></div>'
+                        )
+                    sub_section = (
+                        f'<div class="sub-breakdown">'
+                        f'<div class="progress-label">Sub-creature darted DNA &nbsp;<span style="opacity:.8">{sub_held:,.0f} / {sub_required:,.0f}</span></div>'
+                        f'<div class="progress-track-thin"><div class="progress-fill" style="width:{sub_pct:.1f}%;background:{sub_bar_color}"></div></div>'
+                        f'<details class="sub-details">'
+                        f'<summary><span class="dash-sub-pct" style="color:{sub_bar_color}">{sub_pct:.1f}%</span></summary>'
+                        f'{rows_html}'
+                        f'</details></div>'
+                    )
+
+                # ── ancestors badge text ──
+                ancestors_text = f'&nbsp;·&nbsp; {n_parents} ancestors' if n_parents > 0 else ''
+
+                # ── card HTML as a single concatenated string — avoids blank lines
+                #    that would cause Streamlit's markdown parser to escape HTML ──
+                card_html = (
+                    f'<div class="dash-card">'
+                    f'<div class="rarity-bar" style="background:{color}"></div>'
+                    f'<div style="padding-left:8px">'
+                    f'<div class="dash-card-name">{name}</div>'
+                    f'<div class="dash-card-meta"><span style="color:{color}">{info["rarity"]}</span>'
+                    f' &nbsp;·&nbsp; Lv {info["level"]}{ancestors_text}</div>'
+                    f'<div class="progress-label">Root DNA</div>'
+                    f'<div class="progress-track"><div class="progress-fill"'
+                    f' style="width:{pct:.1f}%;background:{bar_color}"></div></div>'
+                    f'<span class="dash-pct" style="color:{bar_color}">{pct:.1f}%</span>'
+                    f'<span class="dash-status" style="background:{badge_bg};color:{badge_fg}">{status}</span>'
+                    f'<div class="dash-detail">{detail}</div>'
+                    f'{sub_section}'
+                    f'</div></div>'
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
+
                 if st.button(f"View {name}", key=f"dash_btn_{name}", use_container_width=True):
                     st.session_state.active_page = "tree"
                     st.session_state.tree_animal = name
@@ -884,7 +913,6 @@ elif st.session_state.active_page == "history":
 
     all_fused = sorted(set(h["dino"] for h in history))
 
-    # ── controls row ──────────────────────────────────────────────────────────
     ctrl1, ctrl2, ctrl3 = st.columns([3, 2, 2])
 
     with ctrl1:
@@ -916,7 +944,6 @@ elif st.session_state.active_page == "history":
     elif not HAS_PLOTLY:
         st.warning("Install plotly to see the chart: `pip install plotly`")
     else:
-        # Build per-creature history dict
         history_by_creature = {}
         for dino in selected_creatures:
             records = [h for h in history if h["dino"] == dino]
@@ -927,7 +954,6 @@ elif st.session_state.active_page == "history":
 
     st.markdown("---")
 
-    # ── summary stats (all selected creatures combined) ───────────────────────
     filtered_all = [h for h in history
                     if not selected_creatures or h["dino"] in selected_creatures]
     filtered_all = filtered_all[-window:] if window else filtered_all
@@ -960,7 +986,6 @@ elif st.session_state.active_page == "history":
   </div>
 </div>""", unsafe_allow_html=True)
 
-    # ── table ─────────────────────────────────────────────────────────────────
     st.markdown("#### Log")
     filter_dino = st.selectbox("Filter table by creature",
                                ["All"] + all_fused, key="hist_table_filter")
@@ -991,7 +1016,6 @@ elif st.session_state.active_page == "history":
   <span>{lvl_str}</span>
 </div>""", unsafe_allow_html=True)
 
-    # ── clear ─────────────────────────────────────────────────────────────────
     st.markdown("---")
     with st.expander("Danger zone"):
         target_clear = st.selectbox("Clear history for", ["All"] + all_fused, key="clear_sel")
